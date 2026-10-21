@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Run artifacts (episodes, memory, plots, videos)
+runs/
+
+# Rust (T22)
+target/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/

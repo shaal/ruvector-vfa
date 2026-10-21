@@ -1,0 +1,36 @@
+# ruvector-vfa
+
+**Force-aware, memory-augmented robot arm in MuJoCo.** A Franka Panda learns to pick up cubes it cannot tell apart by sight — heavy, slippery, or fragile — by remembering how past grasps *felt*.
+
+Inspired by Eka Robotics' Vision-Force-Action idea ("force is the language of manipulation") and the [`ruvector-robotics`](https://github.com/ruvnet/ruvector/tree/main/crates/ruvector-robotics) cognitive crate (`MemorySystem`, `CognitiveCore`, `SkillLearning`).
+
+> **Status: planned, not yet implemented.** The code is built task by task with the `/ship-next` loop. Progress lives in [`ROADMAP.md`](ROADMAP.md).
+
+## What it will do
+
+- **Simulate** a 7-DoF Panda on a table with a wrist force/torque sensor (MuJoCo + Gymnasium): reach, lift, pick-and-place.
+- **Remember** every attempt as vectors built from force profiles, trajectories, context, and outcome (episodic + semantic memory, cosine search, reinforcement of what worked).
+- **Think in two speeds**: System 1 runs the grasp skill and reflexes at 500 Hz; System 2 queries memory at attempt start, after a gentle touch-and-heft probe, and after a failure. A safety supervisor can override both.
+- **Retry until success**, narrowing the safe grip-force window with evidence from similar past slips and breaks.
+- **Prove it** against fair baselines (fixed, best-fixed, random-retry with the same retry budget) on a benchmark frozen before the memory code exists, including a force ablation.
+
+## Read next
+
+| Doc | What it holds |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System design, learning-problem design, memory, dual-process loop, RuVector mapping |
+| [`ROADMAP.md`](ROADMAP.md) | 22 tasks, each one PR, with acceptance criteria and verify commands |
+| [`docs/BRIEF.md`](docs/BRIEF.md) | The original project brief, verbatim |
+| [`CLAUDE.md`](CLAUDE.md) | Rules for the coding agent (environment, probes, frozen benchmark) |
+
+## Build it with shipyard
+
+```bash
+shipyard --tasks ROADMAP.md      # one quality-gated, squash-merged PR per task
+```
+
+Setup and demo instructions arrive with T01 and T16.
+
+## License
+
+MIT (see [`LICENSE`](LICENSE)). The vendored Franka Panda model (added in T02) keeps its Apache-2.0 license from MuJoCo Menagerie.
