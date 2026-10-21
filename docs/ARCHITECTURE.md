@@ -30,7 +30,7 @@ The memory and cognition layers mirror the `ruvector-robotics` Rust crate (`Memo
    escalation/failure ──►│   learn(): store attempt, reinforce utility   │
                          │            ▲                    │ θ           │
                          │            │ percepts, events   ▼             │
-                         │   SYSTEM 1 — REACTIVE (control rate, 500 Hz)  │
+                         │   SYSTEM 1 — REACTIVE (control rate)          │
                          │   GraspLiftSkill phase machine + slip reflex  │
                          │   → OperationalSpaceController (impedance)    │
                          └────────────┬───────────────────────▲─────────┘
@@ -50,7 +50,9 @@ The memory and cognition layers mirror the `ruvector-robotics` Rust crate (`Memo
                          └──────────────────────────────────────────────┘
 ```
 
-**Rates.** Physics `dt = 2 ms`. The OSC torque law and the safety check run every physics step (500 Hz). The skill phase machine and reflexes run at 500 Hz as well (cheap). System 2 runs only at its three triggers, never inside a control tick. The Gymnasium `osc` action interface steps at 50 Hz (10 physics substeps) for RL users.
+**Rates.** Physics `dt = 2 ms` (500 Hz). The OSC torque law, the skill phase machine, the reflexes, and the safety check run at `control_hz` (100–500 Hz; torques are held across physics substeps). T03 picks the highest `control_hz` that keeps simulation ≥ 10× faster than real time on one core, and records it here. System 2 runs only at its three triggers, never inside a control tick. The Gymnasium `osc` action interface steps at 50 Hz for RL users.
+
+**Throughput budget.** Benchmarks run thousands of attempts. One shell command may run at most 10 minutes, so long runs are chunked per condition × seed, resumable, and parallel across processes (`--workers`). Refer to `CLAUDE.md` → *Runtime limits*.
 
 ---
 
@@ -123,7 +125,7 @@ Feature groups:
 - **Trajectory** — EE path relative to the object (16 points × 3) and a speed profile (16).
 - **Context** — observed cube position (3), size (1), initial joint positions (7).
 
-Each group is standardized with statistics fitted on calibration episodes (`configs/embedding_stats.npz`), multiplied by a group weight, concatenated, and **L2-normalized**. Unit vectors make dot product equal to cosine similarity, which matches the Rust crate's dot-product recall (§10).
+Each group is standardized with statistics fitted on the committed calibration fixture `tests/fixtures/calib_episodes.npz` (saved to `configs/embedding_stats.npz`), multiplied by a group weight, concatenated, and **L2-normalized**. Unit vectors make dot product equal to cosine similarity, which matches the Rust crate's dot-product recall (§10).
 
 ### 5.2 Tiers (T12, T13)
 
@@ -150,7 +152,7 @@ Each group is standardized with statistics fitted on calibration episodes (`conf
 
 | Mode | Who acts | Runs when |
 |---|---|---|
-| `REACTIVE` (System 1) | `GraspLiftSkill` + slip reflex + OSC | every control tick between System 2 decisions |
+| `REACTIVE` (System 1) | `GraspLiftSkill` + slip reflex + OSC | every control tick (`control_hz`) between System 2 decisions |
 | `DELIBERATIVE` (System 2) | `RetrievalPolicy` | attempt start · `PROBE_DONE` · escalation (`SLIP_UNRECOVERED`, `MISS`) · after a failure |
 | `EMERGENCY` | `SafetySupervisor` | any safety violation; overrides both |
 
@@ -226,7 +228,7 @@ On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so 
 - peak-force excess — peak finger normal force minus the privileged `F_min` estimate (lower = gentler).
 - force jerk — RMS time derivative of the filtered finger normal force during `SQUEEZE` + `LIFT` (lower = smoother).
 
-**Protocol.** Calibration seeds (for `best_fixed`, embedding statistics, residual training) are disjoint from evaluation seeds. The benchmark (`configs/benchmark.toml` + `configs/objects.toml`) is frozen by hash in T10, before any memory code exists. Results are mean ± std over 3 evaluation seeds. A held-out run freezes memory after one warm-up seed and evaluates on new situations with no writes.
+**Protocol.** Calibration seeds (for `best_fixed`, embedding statistics, residual training) are disjoint from evaluation seeds. The benchmark (`configs/benchmark.toml` + `configs/objects.toml` + `configs/best_fixed.toml`) is frozen by hash in T10, before any memory code exists. Profile sizes come from the attempts/minute measured in T10. Results are mean ± std over 3 evaluation seeds. A held-out run freezes memory after one warm-up seed and evaluates on new situations with no writes.
 
 ---
 
@@ -264,10 +266,10 @@ src/vfa/
   experiments/            # baselines.py, benchmark.py, demo.py, run_all.py, train_residual.py
   viz/                    # force_plot.py, plots.py, video.py, report.py
 assets/menagerie/franka_emika_panda/   # vendored, pristine, Apache-2.0
-configs/                  # objects.toml, benchmark.toml, benchmark.sha256, embedding_stats.npz
+configs/                  # objects.toml, benchmark.toml, best_fixed.toml, benchmark.sha256, embedding_stats.npz
 scripts/                  # spike_grip.py and one-off tools
 rust/ruvector_vfa_py/     # T22
-tests/
+tests/                    # fixtures/calib_episodes.npz (committed, ≤ 5 MB)
 docs/                     # BRIEF, ARCHITECTURE, FEASIBILITY, RESULTS, RUVECTOR_MAPPING, EXTENDING
 runs/                     # git-ignored artifacts
 ```

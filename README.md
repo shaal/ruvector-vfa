@@ -10,7 +10,7 @@ Inspired by Eka Robotics' Vision-Force-Action idea ("force is the language of ma
 
 - **Simulate** a 7-DoF Panda on a table with a wrist force/torque sensor (MuJoCo + Gymnasium): reach, lift, pick-and-place.
 - **Remember** every attempt as vectors built from force profiles, trajectories, context, and outcome (episodic + semantic memory, cosine search, reinforcement of what worked).
-- **Think in two speeds**: System 1 runs the grasp skill and reflexes at 500 Hz; System 2 queries memory at attempt start, after a gentle touch-and-heft probe, and after a failure. A safety supervisor can override both.
+- **Think in two speeds**: System 1 runs the grasp skill and reflexes at control rate (100–500 Hz); System 2 queries memory at attempt start, after a gentle touch-and-heft probe, and after a failure. A safety supervisor can override both.
 - **Retry until success**, narrowing the safe grip-force window with evidence from similar past slips and breaks.
 - **Prove it** against fair baselines (fixed, best-fixed, random-retry with the same retry budget) on a benchmark frozen before the memory code exists, including a force ablation.
 
@@ -25,9 +25,15 @@ Inspired by Eka Robotics' Vision-Force-Action idea ("force is the language of ma
 
 ## Build it with shipyard
 
+[shipyard](https://github.com/shaal/shipyard) loops the `/ship-next` skill: one quality-gated, squash-merged PR per task.
+
 ```bash
-shipyard --tasks ROADMAP.md      # one quality-gated, squash-merged PR per task
+npx @shaal/shipyard init                    # one-time: installs /ship + /ship-next into ~/.claude
+npx @shaal/shipyard 1 --tasks ROADMAP.md    # ship one task
+npx @shaal/shipyard --tasks ROADMAP.md      # drain the whole roadmap
 ```
+
+Inside Claude Code, `/ship-next ROADMAP.md` ships exactly one task.
 
 Setup and demo instructions arrive with T01 and T16.
 

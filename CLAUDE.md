@@ -37,20 +37,41 @@ The generic `/ship-next` text mentions `npm test` and browser smoke tests. **Tho
 | Slow tests (physics sweeps, benchmarks) | `uv run pytest -m slow -q` | < 10 min |
 | Visual check | Render offscreen with `mujoco.Renderer` → save PNG under `runs/` → Read the PNG | < 30 s |
 | Demo smoke (after T16) | `uv run vfa demo --quick` | < 3 min |
+| Benchmark chunk (after T10) | `uv run python -m vfa.experiments.benchmark --condition <c> --profile <p> --workers 8` | ≤ 9 min per command |
 
 Rules:
 
 - **Never use `mujoco.viewer` / `launch_passive` / `launch` in agent runs.** On macOS it needs `mjpython` and blocks a headless session. Offscreen `mujoco.Renderer(model, h, w)` works (verified with mujoco 3.16).
-- **No background jobs.** `/ship-next` runs headless; a background process dies when the turn ends. Run long jobs in the foreground with a timeout, or add a `--quick` mode.
+- **No background jobs.** `/ship-next` runs headless; a background process dies when the turn ends.
 - Mark any test over ~5 s with `@pytest.mark.slow`.
 - Evidence in the gate must be command output you ran this session (test counts, metric values, PNG paths).
+
+## Runtime limits (long runs must be chunked)
+
+- **One shell command can run for at most 10 minutes** (the agent's foreground limit). Design every command to finish in **≤ 9 min**.
+- macOS has **no `timeout` binary**. Enforce budgets inside Python (a wall-clock deadline that stops cleanly and saves partial results), not with a shell wrapper.
+- Any run that can exceed 9 min must be **chunked and resumable**:
+  - one result file per chunk: `runs/<run-id>/<condition>/seed<k>.json` (split further by situation range if needed);
+  - the runner skips chunks whose result file already exists, so re-running the same command continues the work;
+  - a separate `aggregate` subcommand builds the tables and plots from the chunk files.
+- Parallelize independent chunks with `--workers N` (`concurrent.futures.ProcessPoolExecutor`; default `min(8, os.cpu_count() - 2)`; this Mac has 16 cores). Baseline conditions and different seeds are independent. A memory condition stays **sequential within one seed**, because its memory evolves.
+- Throughput is a requirement, not a detail. T03 sets the floor, T10 measures attempts/minute and sizes the benchmark from it.
+
+## Data handoffs between tasks
+
+`runs/` is git-ignored and can disappear between tasks. A task must never depend on files another task left in `runs/`. Use one of these instead:
+
+- **Committed fixtures**: small (≤ 5 MB total) files in `tests/fixtures/`, produced by `scripts/make_fixtures.py`, with the generating command in the script docstring.
+- **Committed configs**: fitted parameters live in `configs/` (e.g. `configs/embedding_stats.npz`, `configs/best_fixed.toml`).
+- **Regeneration**: a named command that rebuilds the input from scratch inside the task's time budget.
 
 ## Frozen benchmark (from T10 onward)
 
 - `configs/benchmark.toml` defines the evaluation: object classes, hidden-property ranges, number of situations, seeds, retry budget.
 - `configs/objects.toml` defines the hidden object classes (created in T04, final values set in T05/T10).
-- `configs/benchmark.sha256` holds one hash over both files. `tests/test_benchmark_frozen.py` fails if either file changes.
-- **Do not edit either file or the hash after T10** unless the task text explicitly says so. Improve the method, not the test.
+- `configs/best_fixed.toml` holds the `best_fixed` baseline θ found in T10. Later tasks load it; they never re-search it.
+- `configs/benchmark.sha256` holds one hash over these three files. `tests/test_benchmark_frozen.py` fails if any of them changes.
+- **Do not edit these files or the hash after T10** unless the task text explicitly says so. Improve the method, not the test.
 - Baselines get the same retry budget as the memory agent. Never compare memory-with-retries against a single baseline attempt.
 
 ## Missed numeric targets

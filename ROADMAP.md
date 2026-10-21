@@ -3,8 +3,9 @@
 Task list for the unattended `/ship-next` loop. Run it with:
 
 ```bash
-shipyard --tasks ROADMAP.md          # drain the whole list, one merged PR per task
-shipyard 1 --tasks ROADMAP.md        # ship exactly one task
+npx @shaal/shipyard --tasks ROADMAP.md     # drain the whole list, one merged PR per task
+npx @shaal/shipyard 1 --tasks ROADMAP.md   # ship exactly one task
+# or, inside Claude Code: /ship-next ROADMAP.md
 ```
 
 ## Rules for the loop (read before every task)
@@ -12,6 +13,8 @@ shipyard 1 --tasks ROADMAP.md        # ship exactly one task
 - Do the **first unchecked task** in document order. Never skip ahead. Each task lists `depends:`.
 - Only top-level task lines carry a checkbox. Acceptance items are plain bullets. Do not add checkboxes inside a task.
 - Each task fits in one headless turn: no background jobs, and every long run stays inside its stated budget.
+- One shell command runs for at most 10 minutes. Chunk anything longer and make it resumable. Refer to `CLAUDE.md` → *Runtime limits*.
+- Never depend on files a previous task left in `runs/`. Refer to `CLAUDE.md` → *Data handoffs*.
 - "Verify" names the exact commands the confidence gate must run and quote. Refer to `CLAUDE.md` → *Verification probes*.
 - Numeric targets: if a target misses after honest work, follow `CLAUDE.md` → *Missed numeric targets*. Never tune the frozen benchmark.
 - Requirements source: `docs/BRIEF.md` (the original brief) and `docs/ARCHITECTURE.md` (design decisions).
@@ -69,7 +72,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Acceptance:
     - Reach test: 10 random targets inside the workspace box, final error < 1 cm and orientation error < 5° within 2 s of sim time.
     - Compliance test: a lowered stiffness gives a measurably larger deflection under the same external push (`xfrc_applied`).
-    - Throughput: a 5 s simulated episode runs in < 2 s wall time on this Mac. Print the measured number.
+    - Throughput: a 10 s simulated lift-length episode runs in ≤ 1 s wall time on one core (≥ 10× real time). Print the measured number. If Python per-step overhead is too high, run the OSC law at a lower `control_hz` (e.g. 100–250 Hz) and hold torques across physics substeps; pick the highest rate that meets the target and record it in `docs/ARCHITECTURE.md` §2.
   - Verify: `uv run pytest -q tests/test_osc.py`
   - Budget: ~45 min. Tests < 20 s.
   - depends: T02
@@ -103,7 +106,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
     - The F/T slip detector reaches ≥ 0.9 precision and ≥ 0.8 recall against ground truth on the spike data.
     - If a criterion fails: adjust class ranges or the gripper actuator in this task (the benchmark is not frozen yet). Record what you changed and why.
   - Verify: `uv run python scripts/spike_grip.py --quick` (< 5 min), then Read the heat-map PNG and quote the table in `docs/FEASIBILITY.md`.
-  - Budget: ~60 min. Full sweep < 10 min wall.
+  - Budget: ~60 min. The full sweep uses `--workers` and finishes in ≤ 9 min per command.
   - depends: T04
 
 ## Phase B — System 1: environment, skill, safety, baseline
@@ -171,20 +174,22 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
 - [ ] **T10 — Baselines, difficulty calibration, and benchmark freeze**
   - Goal: fix the yardstick *before* memory exists, so memory cannot be graded on a test tuned for it.
   - Deliverables:
-    - `configs/benchmark.toml`: class mix, number of situations per seed (default 60, 12 per class), evaluation seeds (3) separate from calibration seeds, `max_attempts = 5`, and a `quick` profile (1 seed, 15 situations, < 3 min).
+    - Measure wall time per attempt first (median and p95, one core). Size the profiles from that number: `quick` (1 seed, 15 situations) must finish in < 3 min with workers, and every full-benchmark chunk (one condition × one seed) must finish in ≤ 9 min. Default target: 60 situations per seed (12 per class); shrink only if the measured throughput forces it. Record attempts/minute in `docs/RESULTS.md`.
+    - `configs/benchmark.toml`: class mix, situations per seed, evaluation seeds (3) separate from calibration seeds, `max_attempts = 5`, and the `quick` and `calib` profiles.
     - `vfa/experiments/baselines.py`:
       - `naive` — one fixed θ, a sensible engineer's default stated in the docstring.
-      - `best_fixed` — the single θ with the highest success on the **calibration** seeds (grid search). This is the strongest non-adaptive baseline.
+      - `best_fixed` — the single θ with the highest success on the **calibration** seeds (grid search, chunked with `--workers`). This is the strongest non-adaptive baseline. Save it to `configs/best_fixed.toml`.
       - `random_retry` — `naive` first, then random θ within bounds on each retry, same `max_attempts` as memory.
-    - `vfa/experiments/benchmark.py`: runs a condition over the benchmark and writes `runs/<id>/metrics.json` (success@1, success@k, mean attempts-to-success, break rate, drop rate, peak-force excess, force jerk).
-    - Write `configs/benchmark.sha256` (one hash over `configs/benchmark.toml` + `configs/objects.toml`) and `tests/test_benchmark_frozen.py` (the hash must match).
+    - `vfa/experiments/benchmark.py`: chunked and resumable per `CLAUDE.md` → *Runtime limits* (`--condition`, `--profile`, `--seed`, `--workers`, `--save-episodes DIR`), plus an `aggregate` subcommand that writes `metrics.json` (success@1, success@k, mean attempts-to-success, break rate, drop rate, peak-force excess, force jerk).
+    - `scripts/make_fixtures.py`: runs the `calib` profile with `naive` and `random_retry` and commits a compact episode set to `tests/fixtures/calib_episodes.npz` (≤ 5 MB, all five classes, successes and failures, hidden class labels included for test scoring only). T11 and T13 build on this fixture.
+    - Write `configs/benchmark.sha256` (one hash over `configs/benchmark.toml` + `configs/objects.toml` + `configs/best_fixed.toml`) and `tests/test_benchmark_frozen.py` (the hash must match).
     - Create `docs/RESULTS.md` with the three baselines' measured numbers.
   - Acceptance:
     - `best_fixed` success@1 ≤ 75 % — the problem needs adaptation. If it is higher, widen the class conflict in `configs/objects.toml` in this task, re-measure, and record the change.
     - `random_retry` success@5 is reported. It is the bar for memory's attempts-to-success.
     - The frozen-hash test passes.
-  - Verify: `uv run python -m vfa.experiments.benchmark --condition naive --profile quick`, then the full run for all three baselines (< 15 min total), then `uv run pytest -q tests/test_benchmark_frozen.py`.
-  - Budget: ~60 min.
+  - Verify: `uv run python -m vfa.experiments.benchmark --condition naive --profile quick`, then the full run for all three baselines (one command per condition, each ≤ 9 min with `--workers 8`), then `aggregate`, then `uv run pytest -q tests/test_benchmark_frozen.py`.
+  - Budget: ~75 min.
   - depends: T09
 
 ## Phase C — RuVector-inspired memory
@@ -197,10 +202,10 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
       - `trajectory_features(episode)` — EE path relative to the object, resampled, plus a velocity profile.
       - `context_features(obs0)` — observed cube pose and size, initial joint config.
       - Retrieval **keys** (built from what exists at query time): `key_pre` (context only), `key_probe` (context + probe force), `key_retry` (context + previous attempt's full force profile). Also `full_embedding` (everything + outcome).
-    - Per-group standardization (running mean/std fitted on calibration data, saved to `configs/embedding_stats.npz`), per-group weights, and L2 normalization of every vector.
+    - Per-group standardization (mean/std fitted on `tests/fixtures/calib_episodes.npz`, saved to `configs/embedding_stats.npz` and committed), per-group weights, and L2 normalization of every vector.
   - Acceptance:
     - Tests: deterministic; all vectors have unit norm; fixed dimensions are documented and asserted.
-    - Sanity on T10 baseline episodes: same-class `key_probe` pairs are more similar than cross-class pairs (mean cosine gap ≥ 0.1). Context-only keys show a smaller gap — print both numbers.
+    - Sanity on `tests/fixtures/calib_episodes.npz`: same-class `key_probe` pairs are more similar than cross-class pairs (mean cosine gap ≥ 0.1). Context-only keys show a smaller gap — print both numbers.
   - Verify: `uv run pytest -q tests/test_embeddings.py`
   - Budget: ~45 min. Tests < 30 s.
   - depends: T10
@@ -227,7 +232,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
     - `vfa/memory/skill_learning.py`, mirroring `ruvector-robotics::cognitive::skill_learning`: `Demonstration`, `Skill`, `SkillLibrary` with `learn_from_demonstration(name, demos)` (average the EE trajectories and θ; `confidence = 1 − 1/(n+1)`), `execute_skill`, `improve_skill(name, feedback)` (clamped to [0, 1]).
     - `consolidate(memory)`: cluster successful episodes on `key_probe` (k-means in numpy, or greedy threshold clustering), learn one skill per cluster, store its centroid in `SemanticMemory`. Skill names are generated (e.g. `skill_03`). Clustering never reads class labels.
   - Acceptance:
-    - Tests: averaging and confidence math matches the Rust semantics; on T10 baseline successes the clusters reach purity ≥ 0.7 against hidden class labels (labels used only to score the test).
+    - Tests: averaging and confidence math matches the Rust semantics; on the successes in `tests/fixtures/calib_episodes.npz` the clusters reach purity ≥ 0.7 against hidden class labels (labels used only to score the test).
   - Verify: `uv run pytest -q tests/test_skill_learning.py`
   - Budget: ~40 min. Tests < 20 s.
   - depends: T12
@@ -310,7 +315,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
     - `memory_full` mean peak-force excess or force jerk is lower than `random_retry` (smoother, gentler force).
     - Report the force ablation (`memory_full` vs `memory_ctx_only`) with its measured gap. It is not a gate.
     - On a miss, follow `CLAUDE.md` → *Missed numeric targets*.
-  - Verify: `uv run python -m vfa.experiments.run_all` (< 30 min, foreground), then quote the `docs/RESULTS.md` table.
+  - Verify: `uv run python -m vfa.experiments.run_all --workers 8`, re-run until it reports every chunk done (each invocation ≤ 9 min, resumable), then `uv run python -m vfa.experiments.run_all aggregate`, then quote the `docs/RESULTS.md` table.
   - Budget: ~60 min + run time.
   - depends: T17
 
@@ -353,14 +358,14 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Acceptance:
     - Training reward improves monotonically (smoothed) and the curve is saved.
     - Target: `memory_full+residual` force jerk ≥ 20 % lower than `memory_full` with success@1 not lower by more than 3 points. On a miss, follow the CLAUDE.md rule.
-  - Verify: `uv run python -m vfa.experiments.train_residual --quick` (< 10 min), then the benchmark quick profile for both conditions.
+  - Verify: `uv run python -m vfa.experiments.train_residual --quick --workers 8` (≤ 9 min; full training is chunked and resumable by ES generation), then the benchmark quick profile for both conditions.
   - Budget: ~60 min.
   - depends: T20
 
 - [ ] **T22 — Real RuVector backend: PyO3 binding over `ruvector-robotics`**
   - Goal: prove the drop-in hooks — run the same memory through the actual Rust crate.
   - Deliverables:
-    - `rust/ruvector_vfa_py/`: a maturin + PyO3 crate. It depends on `ruvector-robotics` by git (`github.com/ruvnet/ruvector`, pinned `rev` of an upstream commit that contains `crates/ruvector-robotics`). Expose `EpisodicMemory` (`store`, `recall_similar`), `SemanticMemory` (`store`, `find_similar`), `SkillLibrary` (`learn_from_demonstration`, `improve_skill`), and `CognitiveCore` (mode/state transitions).
+    - `rust/ruvector_vfa_py/`: a maturin + PyO3 crate. It depends on `ruvector-robotics` by git (`github.com/ruvnet/ruvector`, pinned `rev = "3e8429739fc0a3878b553a87bb91e7f66d8c0cbd"`, the latest upstream commit touching `crates/ruvector-robotics` when this plan was written; confirm it with `git ls-remote` or pick a newer one). Expose `EpisodicMemory` (`store`, `recall_similar`), `SemanticMemory` (`store`, `find_similar`), `SkillLibrary` (`learn_from_demonstration`, `improve_skill`), and `CognitiveCore` (mode/state transitions).
     - `vfa/memory/ruvector_backend.py`: `RuVectorBackend(MemoryBackend)`. Rust `Episode` has no id/success fields: store the retrieval key as the single percept, θ JSON + record id in `actions`, and the signed outcome in `reward`. Keep a Python side table for payloads.
     - Optional extra `ruvector` (`maturin`) and a `--backend ruvector` flag on the benchmark and the demo. Tests skip when the extension is not built.
   - Acceptance:
