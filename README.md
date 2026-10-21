@@ -19,6 +19,7 @@ Inspired by Eka Robotics' Vision-Force-Action idea ("force is the language of ma
 | Doc | What it holds |
 |---|---|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System design, learning-problem design, memory, dual-process loop, RuVector mapping |
+| [`docs/FEASIBILITY.md`](docs/FEASIBILITY.md) | T05 physics spike: grip force × closing speed × hidden class, squeeze calibration, F/T slip detector |
 | [`ROADMAP.md`](ROADMAP.md) | 22 tasks, each one PR, with acceptance criteria and verify commands |
 | [`docs/BRIEF.md`](docs/BRIEF.md) | The original project brief, verbatim |
 | [`CLAUDE.md`](CLAUDE.md) | Rules for the coding agent (environment, probes, frozen benchmark) |
@@ -35,12 +36,13 @@ npx @shaal/shipyard --tasks ROADMAP.md      # drain the whole roadmap
 
 Inside Claude Code, `/ship-next ROADMAP.md` ships exactly one task.
 
-Setup and demo instructions arrive with T01 and T16. You can already build the scene, hold the arm under gravity compensation, read the wrist F/T sensor, render a PNG, time the impedance controller on a scripted grasp-and-lift, and draw cubes from the five hidden object classes in `configs/objects.toml` (`vfa.sim.objects`: `sample_object`, `apply_object`, and the `BreakMonitor` break rule):
+Setup and demo instructions arrive with T01 and T16. You can already build the scene, hold the arm under gravity compensation, read the wrist F/T sensor, render a PNG, time the impedance controller on a scripted grasp-and-lift, draw cubes from the five hidden object classes in `configs/objects.toml` (`vfa.sim.objects`: `sample_object`, `apply_object`, and the `BreakMonitor` break rule), and run the T05 grip-force spike:
 
 ```bash
 uv sync
 uv run vfa scene-check --png runs/scene.png
 uv run python -m vfa.control.throughput      # time the OSC + gripper control loop
+uv run python scripts/spike_grip.py --quick  # grip force × closing speed × class (~30-60 s, 8 workers)
 ```
 
 ## License

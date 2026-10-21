@@ -5,8 +5,11 @@ loads it into a ``mujoco.MjSpec`` and edits the spec:
 
 - the seven arm position servos become torque ``motor`` actuators
   (limits 87/87/87/87/12/12/12 N·m, ``ARM_TORQUE_LIMITS``);
-- the gripper keeps the menagerie tendon actuator (``actuator8``, ctrl 0..255
-  maps to 0..0.08 m opening, ±100 N). T05 decides whether it becomes a force motor;
+- the gripper actuator (``actuator8``, on the menagerie ``split`` tendon) becomes a
+  force ``motor``: ctrl = tendon force [N], ±100 N, positive opens; each finger
+  gets half of it (T05: the menagerie position servo cannot squeeze harder than
+  25·width N per finger, 1.25 N on a 5 cm cube). ``SceneConfig(gripper="servo")``
+  keeps the pristine servo (ctrl 0..255 maps to 0..0.08 m opening);
 - a table (top surface at world ``z = 0``; the robot base sits on it at the
   origin, so world frame = robot base frame), a floor, lights, and an
   ``overview`` camera;
@@ -59,7 +62,12 @@ ARM_JOINTS: tuple[str, ...] = tuple(f"joint{i}" for i in range(1, 8))
 ARM_ACTUATORS: tuple[str, ...] = tuple(f"motor{i}" for i in range(1, 8))
 ARM_TORQUE_LIMITS: tuple[float, ...] = (87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0)
 GRIPPER_ACTUATOR = "actuator8"
-GRIPPER_OPEN_CTRL = 255.0
+# Gripper actuator kinds (``SceneConfig.gripper``). "motor" (default, T05): a force
+# motor on the tendon, ctrl = tendon force [N] within ±GRIPPER_FORCE_LIMIT, positive
+# opens. "servo": the pristine menagerie position servo (ctrl 0..255 = 0..0.08 m).
+GRIPPER_KINDS: tuple[str, ...] = ("motor", "servo")
+GRIPPER_FORCE_LIMIT = 100.0  # N on the tendon: up to 50 N squeeze per finger
+GRIPPER_OPEN_CTRL = 255.0  # servo ctrl for a fully open gripper (the home keyframe)
 FINGER_JOINTS: tuple[str, str] = ("finger_joint1", "finger_joint2")
 
 # Menagerie "home" keyframe arm configuration (the ``home`` key's first 7 qpos).
@@ -84,6 +92,9 @@ LEFT_TOUCH_SENSOR = "left_touch"
 RIGHT_TOUCH_SENSOR = "right_touch"
 OVERVIEW_CAMERA = "overview"
 HOME_KEY = "home"
+
+# Ratio of frictional to normal constraint impedance (MuJoCo ``opt.impratio``).
+IMPRATIO = 10.0
 
 # Franka TCP: fingertip center, 0.1034 m along the hand z axis from the flange.
 EE_OFFSET = 0.1034
@@ -128,10 +139,14 @@ class SceneConfig:
     table_thickness: float = 0.05
     table_height: float = 0.75  # floor is at z = -table_height
     offscreen_size: tuple[int, int] = (1280, 960)  # (width, height) framebuffer
+    gripper: str = "motor"  # one of GRIPPER_KINDS
 
     def __post_init__(self) -> None:
         def put(name: str, value: object) -> None:
             object.__setattr__(self, name, value)  # frozen: normalize once, here
+
+        if not isinstance(self.gripper, str) or self.gripper not in GRIPPER_KINDS:
+            raise ValueError(f"gripper must be one of {GRIPPER_KINDS}, got {self.gripper!r}")
 
         put("timestep", _positive("timestep", self.timestep))
         put("cube_size", _cube_size(self.cube_size))
@@ -193,10 +208,24 @@ def build_spec(cfg: SceneConfig | None = None) -> mujoco.MjSpec:
     spec = mujoco.MjSpec.from_file(str(PANDA_XML))
     spec.modelname = "panda_vfa"
     spec.option.timestep = cfg.timestep
+    # T05: elliptic friction cones with impratio 10 (MuJoCo's advice for grasping).
+    # With the default pyramidal cones and impratio 1 a held cube slid 2.9-9.4 mm
+    # in the grip over a 2 s lift and hold at 1.1x the grip it needs (1.5-5.5 mm at
+    # 2x); with these, 0.12-0.47 mm, and below the needed grip it still drops
+    # (ARCHITECTURE §3, D11).
+    spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
+    spec.option.impratio = IMPRATIO
     spec.visual.global_.offwidth = cfg.offscreen_size[0]
     spec.visual.global_.offheight = cfg.offscreen_size[1]
 
     _arm_servos_to_torque_motors(spec)
+    if cfg.gripper == "motor":
+        _gripper_servo_to_force_motor(spec)
+    # T05: the two fingers never collide with each other. A squeeze on nothing
+    # otherwise drove their collision meshes into each other, where they jammed
+    # (T03: -11 mm at 5 N, -49 mm at 20 N, stuck after open()). The finger joint
+    # limits (0..0.04 m) and the Gripper end stop still stop them.
+    spec.add_exclude(bodyname1=LEFT_FINGER_BODY, bodyname2=RIGHT_FINGER_BODY)
     _add_environment(spec, cfg)
     _add_cube(spec, cfg)
     _add_robot_sites_and_sensors(spec)
@@ -443,7 +472,7 @@ def _arm_servos_to_torque_motors(spec: mujoco.MjSpec) -> None:
     """Turn menagerie actuator1..7 (position servos) into torque motors, in place.
 
     Editing in place keeps the actuator order: ctrl[0:7] = arm torques [N·m],
-    ctrl[7] = gripper (menagerie tendon servo, untouched).
+    ctrl[7] = gripper (``_gripper_servo_to_force_motor`` or the menagerie servo).
     """
     limited = mujoco.mjtLimited.mjLIMITED_TRUE
     for i, (joint, limit) in enumerate(zip(ARM_JOINTS, ARM_TORQUE_LIMITS, strict=True)):
@@ -456,6 +485,24 @@ def _arm_servos_to_torque_motors(spec: mujoco.MjSpec) -> None:
         act.forcelimited = limited
         act.ctrlrange = [-limit, limit]
         act.forcerange = [-limit, limit]
+
+
+def _gripper_servo_to_force_motor(spec: mujoco.MjSpec) -> None:
+    """Turn the menagerie gripper servo (actuator8) into a force motor on the same tendon.
+
+    ctrl = tendon force [N] (gain 1, no bias), limited to ±GRIPPER_FORCE_LIMIT;
+    positive opens. The tendon couples the fingers with coef 0.5, so each finger
+    gets half the tendon force. ``vfa.control.gripper.Gripper`` writes it.
+    """
+    act = spec.actuator(GRIPPER_ACTUATOR)
+    if act is None or act.target != "split":
+        raise RuntimeError(f"menagerie {GRIPPER_ACTUATOR} does not drive the split tendon")
+    limited = mujoco.mjtLimited.mjLIMITED_TRUE
+    act.set_to_motor()
+    act.ctrllimited = limited
+    act.forcelimited = limited
+    act.ctrlrange = [-GRIPPER_FORCE_LIMIT, GRIPPER_FORCE_LIMIT]
+    act.forcerange = [-GRIPPER_FORCE_LIMIT, GRIPPER_FORCE_LIMIT]
 
 
 def _add_environment(spec: mujoco.MjSpec, cfg: SceneConfig) -> None:
@@ -578,8 +625,10 @@ def _set_home_key(spec: mujoco.MjSpec, cfg: SceneConfig) -> None:
         raise RuntimeError("menagerie panda.xml has no 'home' keyframe")
     cube_qpos = [cfg.cube_xy[0], cfg.cube_xy[1], TABLE_TOP_Z + 0.5 * cfg.cube_size, 1, 0, 0, 0]
     key.qpos = [*HOME_ARM_QPOS, *HOME_FINGER_QPOS, *cube_qpos]
-    # Torque motors start at zero; callers add gravity compensation every tick.
-    key.ctrl = [0.0] * len(ARM_ACTUATORS) + [GRIPPER_OPEN_CTRL]
+    # Torque motors start at zero; callers add gravity compensation every tick. The
+    # gripper motor starts with no force (fingers open, at rest); the servo, open.
+    gripper = GRIPPER_OPEN_CTRL if cfg.gripper == "servo" else 0.0
+    key.ctrl = [0.0] * len(ARM_ACTUATORS) + [gripper]
 
 
 # ------------------------------------------------------------------------ helpers

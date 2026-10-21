@@ -60,13 +60,8 @@ def _spec(config: OB.ObjectConfig, name: str, seed: int = 0, **changes) -> OB.Ob
 
 
 def _motor_model() -> mujoco.MjModel:
-    """The scene with actuator8 as a force motor (ctrl = tendon force, ±100 N), as in T03."""
-    spec = S.build_spec()
-    act = spec.actuator(S.GRIPPER_ACTUATOR)
-    act.set_to_motor()
-    act.ctrlrange = [-100.0, 100.0]
-    act.forcerange = [-100.0, 100.0]
-    return spec.compile()
+    """The scene with actuator8 as a force motor (ctrl = tendon force, ±100 N): the T05 default."""
+    return S.build_scene()
 
 
 def _floating_grasp(model: mujoco.MjModel, spec: OB.ObjectSpec):
@@ -662,7 +657,7 @@ def _squeeze(model, spec: OB.ObjectSpec, per_finger: float, seconds: float = 1.0
     trace: list[tuple[float, float, bool]] = []
     for command, duration in (
         (lambda: gripper.close(spec.size + 0.004), 0.5),
-        (lambda: gripper.squeeze(per_finger), seconds),
+        (lambda: gripper.squeeze(per_finger, speed=None), seconds),  # T04 measured the T03 law
     ):
         command()
         for _ in range(round(duration * O.CONTROL_HZ)):
@@ -791,7 +786,11 @@ def test_observation_without_noise_is_the_true_pose(config: OB.ObjectConfig) -> 
 
 
 def test_observation_does_not_reveal_the_class(config: OB.ObjectConfig) -> None:
-    """A settled cube sinks 0.002-0.4 mm into the table, by class; the camera must not see it."""
+    """A settled cube sinks into the table by class; the camera must not see it.
+
+    T05's elliptic friction cones removed the friction coupling of the sink: in
+    seeds 0-2 a stiff cube sinks 0.08-0.14 mm and a soft one 0.46-0.75 mm (5.2-6.0x).
+    """
     for seed in range(2):
         observed, sinks = [], []
         for cls in config.classes.values():
@@ -809,7 +808,7 @@ def test_observation_does_not_reveal_the_class(config: OB.ObjectConfig) -> None:
             obs = OB.observe_cube(model, data, ids=ids)
             assert obs.z == 0.5 * spec.size
             observed.append(np.array([obs.x, obs.y, obs.z, obs.yaw, obs.size]))
-        assert min(sinks) > 0.0 and max(sinks) > 50 * min(sinks), sinks  # the leak is real
+        assert min(sinks) > 0.0 and max(sinks) > 4 * min(sinks), sinks  # the leak is real
         for obs in observed[1:]:
             np.testing.assert_allclose(obs, observed[0], rtol=0.0, atol=1e-6)
 

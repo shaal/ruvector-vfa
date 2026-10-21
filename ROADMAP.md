@@ -93,7 +93,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~30 min. Tests < 15 s.
   - depends: T03
 
-- [ ] **T05 — Physics feasibility spike: does force actually decide success?**
+- [x] **T05 — Physics feasibility spike: does force actually decide success?**
   - Goal: prove the core premise *before* building memory. If low grip does not slip and high grip does not break, nothing downstream can show improvement.
   - Deliverables:
     - `scripts/spike_grip.py`: a scripted grasp (OSC approach → descend → close at a given speed to a given force → lift 10 cm → hold 1 s). Sweep grip force × close speed × the five classes (≥ 5 samples per cell).

@@ -6,12 +6,14 @@ Usage::
     uv run python -m vfa.control.throughput --hz 500 --repeats 5
 
 The episode is a scripted grasp-and-lift of the default cube (0.1 kg, 5 cm):
-move above the cube, descend, squeeze 1 N per finger, lift 10 cm, hold. The
+move above the cube, descend, squeeze 1 N per finger (at the default closing
+speed, 0.5 m/s), lift 10 cm, hold. The
 targets move on minimum-jerk paths, so the controller tracks a moving target as
 a skill will, and the contacts cost what a real grasp costs. It is a timing
-workload, not a tuned grasp: the cube is 9.7 cm up at 6.5 s, then creeps down
-in the grip (soft-contact creep, ≈ 1.2 mm/s) to ≈ 9.3 cm at 10 s. T05 owns grip
-force and contact tuning. The loop runs at ``control_hz`` with torques held
+workload, not a tuned grasp. With T03's pyramidal friction cones the cube crept
+down in the grip (≈ 1.2 mm/s, from 9.7 cm at 6.5 s to 9.3 cm at 10 s); T05's
+elliptic cones (impratio 10) hold it at 9.87 cm at 10 s, at no extra wall
+time. The loop runs at ``control_hz`` with torques held
 across physics substeps. Only the control loop is timed (not the scene build).
 ``cpu_s`` close to ``wall_s`` shows the loop ran on one core.
 
