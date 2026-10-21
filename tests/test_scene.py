@@ -18,6 +18,8 @@ import numpy as np
 import pytest
 
 from vfa import cli
+from vfa.control.gripper import Gripper
+from vfa.control.osc import OperationalSpaceController, control_step
 from vfa.sim import scene as S
 from vfa.sim import scene_check
 
@@ -239,19 +241,35 @@ def _main_pad(model: mujoco.MjModel, geoms: frozenset[int]) -> int:
 
 
 def test_sensors_attach_to_the_right_sites(model: mujoco.MjModel) -> None:
+    st, site, tendon = mujoco.mjtSensor, mujoco.mjtObj.mjOBJ_SITE, mujoco.mjtObj.mjOBJ_TENDON
     expected = {
-        S.WRIST_FORCE_SENSOR: (mujoco.mjtSensor.mjSENS_FORCE, S.WRIST_SITE, 3),
-        S.WRIST_TORQUE_SENSOR: (mujoco.mjtSensor.mjSENS_TORQUE, S.WRIST_SITE, 3),
-        S.LEFT_TOUCH_SENSOR: (mujoco.mjtSensor.mjSENS_TOUCH, S.LEFT_TOUCH_SITE, 1),
-        S.RIGHT_TOUCH_SENSOR: (mujoco.mjtSensor.mjSENS_TOUCH, S.RIGHT_TOUCH_SITE, 1),
+        S.WRIST_FORCE_SENSOR: (st.mjSENS_FORCE, site, S.WRIST_SITE, 3),
+        S.WRIST_TORQUE_SENSOR: (st.mjSENS_TORQUE, site, S.WRIST_SITE, 3),
+        S.LEFT_TOUCH_SENSOR: (st.mjSENS_TOUCH, site, S.LEFT_TOUCH_SITE, 1),
+        S.RIGHT_TOUCH_SENSOR: (st.mjSENS_TOUCH, site, S.RIGHT_TOUCH_SITE, 1),
+        S.WRIST_ACC_SENSOR: (st.mjSENS_ACCELEROMETER, site, S.WRIST_SITE, 3),
+        S.EE_POS_SENSOR: (st.mjSENS_FRAMEPOS, site, S.EE_SITE, 3),
+        S.EE_QUAT_SENSOR: (st.mjSENS_FRAMEQUAT, site, S.EE_SITE, 4),
+        S.EE_LINVEL_SENSOR: (st.mjSENS_FRAMELINVEL, site, S.EE_SITE, 3),
+        S.EE_ANGVEL_SENSOR: (st.mjSENS_FRAMEANGVEL, site, S.EE_SITE, 3),
+        S.GRIPPER_POS_SENSOR: (st.mjSENS_TENDONPOS, tendon, S.GRIPPER_TENDON, 1),
+        S.GRIPPER_VEL_SENSOR: (st.mjSENS_TENDONVEL, tendon, S.GRIPPER_TENDON, 1),
     }
     assert model.nsensor == len(expected)
-    for name, (stype, site, dim) in expected.items():
+    # T06: one contiguous block in SENSOR_NAMES order, so the suite copies it once.
+    assert tuple(expected) == S.SENSOR_NAMES
+    adr = 0
+    for name, (stype, objtype, obj, dim) in expected.items():
         sensor = model.sensor(name)
         assert sensor.type[0] == stype
-        assert sensor.objtype[0] == mujoco.mjtObj.mjOBJ_SITE
-        assert model.site(sensor.objid[0]).name == site
+        assert sensor.objtype[0] == objtype
+        assert mujoco.mj_id2name(model, objtype, sensor.objid[0]) == obj
         assert sensor.dim[0] == dim
+        assert sensor.adr[0] == adr
+        adr += dim
+        if objtype == site and stype not in (st.mjSENS_TOUCH,):
+            assert sensor.reftype[0] == mujoco.mjtObj.mjOBJ_UNKNOWN  # world frame
+    assert model.nsensordata == adr
 
 
 def test_home_keyframe_resets_arm_gripper_and_cube(model: mujoco.MjModel, ids: S.SceneIds) -> None:
@@ -689,6 +707,61 @@ def test_touch_sensors_match_the_contact_helper_during_a_squeeze() -> None:
     assert checked >= 2
     # The fingers stop at the 5 cm cube: opening ≈ cube size.
     assert data.qpos[ids.finger_qpos].sum() == pytest.approx(0.05, abs=0.002)
+
+
+def _reference_finger_cube_forces(model, data, ids) -> tuple[float, float]:
+    """The T02-T05 implementation: walk every contact, mj_contactForce on finger-cube pairs."""
+    left = right = 0.0
+    wrench = np.zeros(6)
+    for i in range(data.ncon):
+        g1, g2 = int(data.contact[i].geom1), int(data.contact[i].geom2)
+        other = g2 if g1 == ids.cube_geom else g1 if g2 == ids.cube_geom else None
+        if other in ids.left_finger_geoms:
+            mujoco.mj_contactForce(model, data, i, wrench)
+            left += wrench[0]
+        elif other in ids.right_finger_geoms:
+            mujoco.mj_contactForce(model, data, i, wrench)
+            right += wrench[0]
+    return float(left), float(right)
+
+
+@pytest.mark.parametrize("cone", ["elliptic", "pyramidal"])
+def test_vectorized_finger_cube_forces_equal_the_contact_walk(cone: str) -> None:
+    """T06 vectorized the helper (55 -> ~13 us with 36 contacts); it must stay bit-exact.
+
+    A stiff cube on the table, squeezed hard and fast, so the fingertip mesh and the
+    pads both touch it and the table contacts are in the list too.
+    """
+    model = S.build_scene()
+    if cone == "pyramidal":
+        model.opt.cone = mujoco.mjtCone.mjCONE_PYRAMIDAL
+    ids = S.scene_ids(model)
+    data = mujoco.MjData(model)
+    S.reset_to_home(model, data)
+    osc = OperationalSpaceController(model, data, ids=ids)
+    gripper = Gripper(model, data, ids)
+    osc.set_target(data.xpos[ids.cube_body] + (0.0, 0.0, 0.004))
+    loaded = 0
+    for k in range(1300):
+        if k == 1000:
+            gripper.squeeze(30.0, speed=0.5)
+        control_step(model, data, (osc, gripper), 1)
+        if k >= 1000:
+            expected = _reference_finger_cube_forces(model, data, ids)
+            assert S.finger_cube_forces(model, data, ids) == expected
+            loaded += min(expected) > 0
+    assert loaded > 200 and data.ncon > 8
+    # A contact without constraint rows (efc_address = -1) carries no force.
+    hits = [
+        i
+        for i in range(data.ncon)
+        if ids.cube_geom in (data.contact[i].geom1, data.contact[i].geom2)
+        and int(data.contact[i].geom1 + data.contact[i].geom2 - ids.cube_geom)
+        in ids.left_finger_geoms
+    ]
+    data.contact.efc_address[hits[0]] = -1
+    left, right = S.finger_cube_forces(model, data, ids)
+    assert (left, right) == _reference_finger_cube_forces(model, data, ids)
 
 
 def test_touch_counts_any_object_but_the_helper_counts_only_the_cube() -> None:

@@ -19,8 +19,13 @@ loads it into a ``mujoco.MjSpec`` and edits the spec:
 - sites: ``ee`` (fingertip center, the Franka TCP 0.1034 m below the flange),
   ``wrist_ft`` (the link7 → hand flange), ``place_target`` (on the table), and
   one touch site per fingertip pad;
-- sensors: ``wrist_force`` and ``wrist_torque`` on ``wrist_ft``, plus
-  ``left_touch`` and ``right_touch``.
+- sensors: ``wrist_force``, ``wrist_torque``, and (T06) the ``wrist_acc``
+  accelerometer on ``wrist_ft``; ``left_touch`` and ``right_touch``; (T06) the
+  ``ee`` site's world pose and velocity (``ee_pos``, ``ee_quat``, ``ee_linvel``,
+  ``ee_angvel``) and the gripper tendon's length and rate (``gripper_pos``,
+  ``gripper_vel``; the opening is twice the length). The sensors fill one
+  contiguous block of ``sensordata`` in this order (``SENSOR_NAMES``), so
+  ``vfa.sim.sensors`` reads them with one copy.
 
 Touch vs. cube force: a ``touch`` sensor counts a contact on its finger when
 MuJoCo's ray test (contact point along the contact normal) hits the pad site,
@@ -90,6 +95,28 @@ WRIST_FORCE_SENSOR = "wrist_force"
 WRIST_TORQUE_SENSOR = "wrist_torque"
 LEFT_TOUCH_SENSOR = "left_touch"
 RIGHT_TOUCH_SENSOR = "right_touch"
+WRIST_ACC_SENSOR = "wrist_acc"
+EE_POS_SENSOR = "ee_pos"
+EE_QUAT_SENSOR = "ee_quat"
+EE_LINVEL_SENSOR = "ee_linvel"
+EE_ANGVEL_SENSOR = "ee_angvel"
+GRIPPER_POS_SENSOR = "gripper_pos"
+GRIPPER_VEL_SENSOR = "gripper_vel"
+GRIPPER_TENDON = "split"
+# Every scene sensor, in model order: they fill sensordata[0:SENSOR_DIM] contiguously.
+SENSOR_NAMES: tuple[str, ...] = (
+    WRIST_FORCE_SENSOR,
+    WRIST_TORQUE_SENSOR,
+    LEFT_TOUCH_SENSOR,
+    RIGHT_TOUCH_SENSOR,
+    WRIST_ACC_SENSOR,
+    EE_POS_SENSOR,
+    EE_QUAT_SENSOR,
+    EE_LINVEL_SENSOR,
+    EE_ANGVEL_SENSOR,
+    GRIPPER_POS_SENSOR,
+    GRIPPER_VEL_SENSOR,
+)
 OVERVIEW_CAMERA = "overview"
 HOME_KEY = "home"
 
@@ -198,8 +225,18 @@ class SceneIds:
     wrist_torque_adr: int
     left_touch_adr: int
     right_touch_adr: int
+    wrist_acc_adr: int
+    ee_pos_adr: int
+    ee_quat_adr: int
+    ee_linvel_adr: int
+    ee_angvel_adr: int
+    gripper_pos_adr: int
+    gripper_vel_adr: int
     left_finger_geoms: frozenset[int]
     right_finger_geoms: frozenset[int]
+    # Per geom (ngeom + 1 entries; the last one stands for "no geom"): 1 = a left
+    # finger geom, 2 = a right finger geom, 0 = anything else.
+    finger_side: np.ndarray
 
 
 def build_spec(cfg: SceneConfig | None = None) -> mujoco.MjSpec:
@@ -257,6 +294,11 @@ def scene_ids(model: mujoco.MjModel) -> SceneIds:
     jnt = mujoco.mjtObj.mjOBJ_JOINT
     arm_joints = [oid(jnt, n) for n in ARM_JOINTS]
     cube_joint = oid(jnt, CUBE_JOINT)
+    left = body_geoms(oid(mujoco.mjtObj.mjOBJ_BODY, LEFT_FINGER_BODY))
+    right = body_geoms(oid(mujoco.mjtObj.mjOBJ_BODY, RIGHT_FINGER_BODY))
+    side = np.zeros(model.ngeom + 1, dtype=np.int8)
+    side[sorted(left)] = 1
+    side[sorted(right)] = 2
     return SceneIds(
         arm_qpos=np.array([model.jnt_qposadr[j] for j in arm_joints], dtype=np.int64),
         arm_dof=np.array([model.jnt_dofadr[j] for j in arm_joints], dtype=np.int64),
@@ -280,8 +322,16 @@ def scene_ids(model: mujoco.MjModel) -> SceneIds:
         wrist_torque_adr=sensor_adr(WRIST_TORQUE_SENSOR),
         left_touch_adr=sensor_adr(LEFT_TOUCH_SENSOR),
         right_touch_adr=sensor_adr(RIGHT_TOUCH_SENSOR),
-        left_finger_geoms=body_geoms(oid(mujoco.mjtObj.mjOBJ_BODY, LEFT_FINGER_BODY)),
-        right_finger_geoms=body_geoms(oid(mujoco.mjtObj.mjOBJ_BODY, RIGHT_FINGER_BODY)),
+        wrist_acc_adr=sensor_adr(WRIST_ACC_SENSOR),
+        ee_pos_adr=sensor_adr(EE_POS_SENSOR),
+        ee_quat_adr=sensor_adr(EE_QUAT_SENSOR),
+        ee_linvel_adr=sensor_adr(EE_LINVEL_SENSOR),
+        ee_angvel_adr=sensor_adr(EE_ANGVEL_SENSOR),
+        gripper_pos_adr=sensor_adr(GRIPPER_POS_SENSOR),
+        gripper_vel_adr=sensor_adr(GRIPPER_VEL_SENSOR),
+        left_finger_geoms=left,
+        right_finger_geoms=right,
+        finger_side=side,
     )
 
 
@@ -325,6 +375,20 @@ def read_wrist_ft(
     return force, torque
 
 
+def read_wrist_acc(
+    model: mujoco.MjModel, data: mujoco.MjData, ids: SceneIds | None = None
+) -> np.ndarray:
+    """Wrist accelerometer [m/s²] in the ``wrist_ft`` site frame: proper acceleration.
+
+    MuJoCo's ``accelerometer`` includes gravity, as a real one does: at rest it
+    reads ``+g`` along the world's up axis (with the hand pointing down, that is
+    the site's −z). T05's held-mass slip detector divides the vertical wrist
+    force by its vertical component.
+    """
+    ids = ids if ids is not None else scene_ids(model)
+    return data.sensordata[ids.wrist_acc_adr : ids.wrist_acc_adr + 3].copy()
+
+
 def read_finger_touch(
     model: mujoco.MjModel, data: mujoco.MjData, ids: SceneIds | None = None
 ) -> tuple[float, float]:
@@ -344,30 +408,44 @@ def finger_cube_forces(
 ) -> tuple[float, float]:
     """Summed contact normal force [N] between each finger and the cube.
 
-    Contact helper that does not depend on the touch sites: it walks the active
-    contacts and sums ``mj_contactForce``'s normal component for every
-    finger-geom / cube-geom pair, pads and finger mesh alike. T04's break rule
-    uses the sum of both.
+    Contact helper that does not depend on the touch sites: it sums the normal
+    force of every finger-geom / cube-geom contact, pads and finger mesh alike.
+    T04's break rule uses the sum of both. With elliptic friction cones (the
+    scene's, since T05) a contact's normal force is the first entry of its
+    constraint force block, which is what ``mj_contactForce`` returns; the
+    contacts are filtered as arrays and read in one gather (T06: 55 → ≈ 13 µs
+    with 36 contacts in a grasp). Other cones go through ``mj_contactForce``.
+    A contact without constraint rows (``efc_address < 0``) carries no force.
     """
     ids = ids if ids is not None else scene_ids(model)
+    n = data.ncon
+    if n == 0:
+        return 0.0, 0.0
+    geom = data.contact.geom[:n]
+    cube = ids.cube_geom
+    other = np.where(geom[:, 0] == cube, geom[:, 1], np.where(geom[:, 1] == cube, geom[:, 0], -1))
+    side = ids.finger_side[other]  # other = -1 reads the trailing "no geom" entry (0)
+    hits = np.flatnonzero(side)
+    if hits.size == 0:
+        return 0.0, 0.0
+    adr = data.contact.efc_address[:n][hits]
+    if model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC:
+        normal = np.where(adr >= 0, data.efc_force[np.maximum(adr, 0)], 0.0)
+    else:
+        normal = np.zeros(hits.size)
+        wrench = np.zeros(6)
+        for k, i in enumerate(hits):
+            mujoco.mj_contactForce(model, data, int(i), wrench)
+            normal[k] = wrench[0]
+    # Plain left-to-right sums in contact order: the same rounding as the T02-T05
+    # loop (Python's sum() compensates since 3.12 and would differ by an ulp).
     left = right = 0.0
-    wrench = np.zeros(6)
-    for i in range(data.ncon):
-        con = data.contact[i]
-        g1, g2 = int(con.geom1), int(con.geom2)
-        if ids.cube_geom == g1:
-            other = g2
-        elif ids.cube_geom == g2:
-            other = g1
+    for force, is_left in zip(normal.tolist(), (side[hits] == 1).tolist(), strict=True):
+        if is_left:
+            left += force
         else:
-            continue
-        if other in ids.left_finger_geoms:
-            mujoco.mj_contactForce(model, data, i, wrench)
-            left += wrench[0]
-        elif other in ids.right_finger_geoms:
-            mujoco.mj_contactForce(model, data, i, wrench)
-            right += wrench[0]
-    return float(left), float(right)
+            right += force
+    return left, right
 
 
 # ------------------------------------------------------------- per-episode hooks
@@ -495,7 +573,7 @@ def _gripper_servo_to_force_motor(spec: mujoco.MjSpec) -> None:
     gets half the tendon force. ``vfa.control.gripper.Gripper`` writes it.
     """
     act = spec.actuator(GRIPPER_ACTUATOR)
-    if act is None or act.target != "split":
+    if act is None or act.target != GRIPPER_TENDON:
         raise RuntimeError(f"menagerie {GRIPPER_ACTUATOR} does not drive the split tendon")
     limited = mujoco.mjtLimited.mjLIMITED_TRUE
     act.set_to_motor()
@@ -609,14 +687,22 @@ def _add_robot_sites_and_sensors(spec: mujoco.MjSpec) -> None:
             group=hidden,
         )
 
-    site = mujoco.mjtObj.mjOBJ_SITE
-    for name, stype, obj in (
-        (WRIST_FORCE_SENSOR, mujoco.mjtSensor.mjSENS_FORCE, WRIST_SITE),
-        (WRIST_TORQUE_SENSOR, mujoco.mjtSensor.mjSENS_TORQUE, WRIST_SITE),
-        (LEFT_TOUCH_SENSOR, mujoco.mjtSensor.mjSENS_TOUCH, LEFT_TOUCH_SITE),
-        (RIGHT_TOUCH_SENSOR, mujoco.mjtSensor.mjSENS_TOUCH, RIGHT_TOUCH_SITE),
+    site, tendon, sens = mujoco.mjtObj.mjOBJ_SITE, mujoco.mjtObj.mjOBJ_TENDON, mujoco.mjtSensor
+    # Frame sensors without a reference object report in the world frame.
+    for name, stype, objtype, obj in (
+        (WRIST_FORCE_SENSOR, sens.mjSENS_FORCE, site, WRIST_SITE),
+        (WRIST_TORQUE_SENSOR, sens.mjSENS_TORQUE, site, WRIST_SITE),
+        (LEFT_TOUCH_SENSOR, sens.mjSENS_TOUCH, site, LEFT_TOUCH_SITE),
+        (RIGHT_TOUCH_SENSOR, sens.mjSENS_TOUCH, site, RIGHT_TOUCH_SITE),
+        (WRIST_ACC_SENSOR, sens.mjSENS_ACCELEROMETER, site, WRIST_SITE),
+        (EE_POS_SENSOR, sens.mjSENS_FRAMEPOS, site, EE_SITE),
+        (EE_QUAT_SENSOR, sens.mjSENS_FRAMEQUAT, site, EE_SITE),
+        (EE_LINVEL_SENSOR, sens.mjSENS_FRAMELINVEL, site, EE_SITE),
+        (EE_ANGVEL_SENSOR, sens.mjSENS_FRAMEANGVEL, site, EE_SITE),
+        (GRIPPER_POS_SENSOR, sens.mjSENS_TENDONPOS, tendon, GRIPPER_TENDON),
+        (GRIPPER_VEL_SENSOR, sens.mjSENS_TENDONVEL, tendon, GRIPPER_TENDON),
     ):
-        spec.add_sensor(name=name, type=stype, objtype=site, objname=obj)
+        spec.add_sensor(name=name, type=stype, objtype=objtype, objname=obj)
 
 
 def _set_home_key(spec: mujoco.MjSpec, cfg: SceneConfig) -> None:
