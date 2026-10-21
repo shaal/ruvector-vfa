@@ -183,6 +183,35 @@ def test_plan_sizes_and_unique_chunk_files(config, profile, attempts) -> None:
     assert {k[0] for k in cells} == set(config.names)
 
 
+def test_the_full_held_out_cubes_were_never_used_by_another_study(config) -> None:
+    """T05 review round 3: the quick profile's noise study ran the first held-out cube
+    (sample 9000), and the debounce was chosen on the quick profile."""
+
+    def samples(profile: dict, held_out: bool) -> set:
+        return {
+            (cls, k)
+            for c in SG.plan(profile, config)
+            if (c.study == "noise") == held_out
+            for cls, k, *_ in c.jobs
+        }
+
+    full_held_out = samples(SG.FULL, True)
+    assert len(full_held_out) == 5 * SG.NOISE_SAMPLES
+    assert {k for _, k in full_held_out} == set(range(9100, 9100 + SG.NOISE_SAMPLES))
+    for profile in (SG.QUICK, SG.FULL):
+        assert not full_held_out & samples(profile, False)
+    assert not full_held_out & samples(SG.QUICK, True)
+    assert not full_held_out & {(c, k) for c in config.names for k in range(9000, 9003)}
+
+
+def test_wilson_interval() -> None:
+    lo, hi = SG.wilson(33, 36)
+    assert (round(lo, 3), round(hi, 3)) == (0.782, 0.971)
+    assert SG.wilson(0, 10)[0] == 0.0 and SG.wilson(0, 5)[0] == 0.0  # clamped, not -2.8e-17
+    assert SG.wilson(10, 10)[1] == 1.0
+    assert all(math.isnan(x) for x in SG.wilson(0, 0))
+
+
 def test_samples_are_paired_across_cells(config) -> None:
     a = SG.sample_spec(config, "fragile_soft", 3)
     assert a == SG.sample_spec(config, "fragile_soft", 3)
@@ -217,6 +246,7 @@ def test_sweep_is_chunked_resumable_and_aggregates(tmp_path, config) -> None:
         "release_samples": 0,
         "margin_samples": 0,
         "noise_samples": 0,
+        "noise_first": SG.NOISE_FIRST_QUICK,
     }
     chunks = {c.name: c for c in SG.plan(profile, config)}
 
@@ -237,6 +267,9 @@ def test_sweep_is_chunked_resumable_and_aggregates(tmp_path, config) -> None:
     assert "No single grip force succeeds" in text
     assert metrics["attempts"] == 5
     json.dumps(metrics, default=float)
+    assert SG.aggregate(tmp_path, "test", profile) == 0
+    strict = json.loads((tmp_path / "metrics.json").read_text())  # no NaN in the file
+    assert strict["slip_detector"]["by_study"]["map"]["n"] == 5
 
     # A chunk from other code (fingerprint) or another plan (jobs) is stale: the
     # aggregation refuses it and the next sweep re-runs only that chunk.
@@ -348,11 +381,12 @@ def test_a_mid_air_release_is_caught_by_the_ft_detector_first(config, arm) -> No
 
 def test_a_partial_slip_at_lift_off_is_detected(config, arm) -> None:
     """At exactly the grip the lift needs, the cube slides part way at the peak
-    acceleration (15 mm here) and is still lifted; 6 % more grip holds it."""
-    spec = SG.sample_spec(config, "heavy_rigid", 3000)
+    acceleration (12 mm here) and is still lifted; 6 % more grip holds it."""
+    spec = SG.sample_spec(config, "heavy_slippery", 3001)
     grip, _ = SG.harness_grip(spec, "margin", 1.0)
     result = SG.run_attempt(arm, spec, grip, SG.HARNESS_SPEED)
     assert result.gt_slip and SG.SLIP_GT_M < result.rel_drop < 0.05, result.rel_drop
+    assert result.success  # still lifted
     assert result.ft_slip
     held = SG.run_attempt(arm, spec, SG.harness_grip(spec, "margin", 1.06)[0], SG.HARNESS_SPEED)
     assert not held.gt_slip and not held.ft_slip and held.rel_drop < 0.001

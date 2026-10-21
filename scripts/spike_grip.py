@@ -45,7 +45,7 @@ import os
 import sys
 import time
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -97,10 +97,12 @@ RAMP_N_PER_S_PER_MPS = 250.0
 # passed ARM_LOAD_N / g (0.15 N ≈ 15 g: every class's lightest cube is 50 g).
 FT_FILTER_HZ = 20.0  # first-order low-pass on the mass estimate
 DROP_FRACTION = 0.9
-# The drop must hold this long to fire (3 ticks at 500 Hz). Chosen on the quick
-# profile from WINDOW_SWEEP: 1-2 ticks fire on noise, 5-10 miss stick-slip
-# partial slips (their dips are short). The held-out cubes (NOISE_FIRST) were
-# not run before this choice.
+# The drop must hold this long to fire (3 ticks at 500 Hz). Chosen from
+# WINDOW_SWEEP on earlier runs, which included the quick profile's noise cubes
+# (sample NOISE_FIRST_QUICK) and the first held-out cubes (samples 9000-9002):
+# 1-2 ticks fire more on noise, 5-10 miss stick-slip partial slips (their dips
+# are short). The full profile's held-out cubes (NOISE_FIRST_FULL) were first
+# run after this choice and DROP_FRACTION were fixed (T05 review round 3).
 DEBOUNCE_S = 0.006
 # Debounce windows [ticks] whose lowest ratio every attempt also records, so the
 # summary scores each (window, threshold) pair exactly.
@@ -250,9 +252,9 @@ def path_target(
 
     The path velocity is fed forward (``vel=``). Without it the damper resists
     the motion and its coupled modes push the ee sideways: a 12 cm descent in
-    0.8 s drifted 8.6 mm off the line (median of 35 cubes, max 9.4 mm; a
-    rate-limited target: 13.6 mm, max 14.5 mm), enough to land a fingertip on a
-    6 cm cube. With it: 2.5 mm (max 2.9 mm) in 0.8 s, 1.8 mm (max 2.1 mm) in 1.0 s.
+    1.0 s drifted 7.2 mm off the line (median of 35 cubes, max 7.9 mm). With
+    ``vel=``: 1.8 mm (max 2.0 mm). An earlier T05 run with a rate-limited
+    descent target drifted 13.6 mm, and a fingertip landed on a 5.9 cm cube.
     """
     s = t / T
     vel = (goal - start) * (min_jerk_rate(s) / T)
@@ -497,10 +499,11 @@ MARGIN_FACTORS: tuple[float, ...] = (0.96, 0.98, 1.0, 1.02, 1.04, 1.06)
 MARGIN_SAMPLES = 6
 MARGIN_FIRST = 3000
 HARNESS_SPEED = 0.1
-# Held-out and noise study: new cubes (never used to choose the threshold) in the
-# near-threshold harness variants, with white Gaussian noise on the detector's two
-# inputs every tick: none (the held-out check), then two levels. T06 owns the real
-# sensor model.
+# Held-out and noise study: new cubes in the near-threshold harness variants, with
+# white Gaussian noise on the detector's two inputs every tick: none (the held-out
+# check), then two levels. T06 owns the real sensor model. The full profile's cubes
+# start at NOISE_FIRST_FULL, which no run used before the threshold and the
+# debounce were fixed; the quick profile (a smoke test) keeps NOISE_FIRST_QUICK.
 NOISE_LEVELS: tuple[tuple[float, float], ...] = ((0.0, 0.0), (0.02, 0.01), (0.05, 0.02))
 NOISE_VARIANTS: tuple[tuple[str, float], ...] = (
     ("margin", 0.98),
@@ -510,7 +513,12 @@ NOISE_VARIANTS: tuple[tuple[str, float], ...] = (
     ("release", 0.9),
 )
 NOISE_SAMPLES = 3
-NOISE_FIRST = 9000
+NOISE_FIRST_QUICK = 9000
+NOISE_FIRST_FULL = 9100
+# Window-edge coverage: this many fresh cubes per class (sample indices from
+# COVERAGE_FIRST) score each window edge against the hidden need, without physics.
+COVERAGE_SAMPLES = 4000
+COVERAGE_FIRST = 20000
 
 QUICK = {
     "forces": (1.0, 2.0, 3.0, 6.0, 12.0, 20.0),
@@ -523,6 +531,7 @@ QUICK = {
     "release_samples": 1,
     "margin_samples": 1,
     "noise_samples": 1,
+    "noise_first": NOISE_FIRST_QUICK,
 }
 FULL = {
     "forces": FORCES,
@@ -535,6 +544,7 @@ FULL = {
     "release_samples": RELEASE_SAMPLES,
     "margin_samples": MARGIN_SAMPLES,
     "noise_samples": NOISE_SAMPLES,
+    "noise_first": NOISE_FIRST_FULL,
 }
 
 
@@ -607,7 +617,9 @@ def plan(profile: dict, config: OB.ObjectConfig) -> list[Chunk]:
             jobs = tuple(
                 (cls, k, 0.0, HARNESS_SPEED, (variant, factor, level))
                 for variant, factor in NOISE_VARIANTS
-                for k in range(NOISE_FIRST, NOISE_FIRST + profile["noise_samples"])
+                for k in range(
+                    profile["noise_first"], profile["noise_first"] + profile["noise_samples"]
+                )
             )
             chunks.append(Chunk(f"noise{level}__{cls}", "motor", "noise", jobs))
     for kind in ("servo", "motor"):
@@ -814,6 +826,26 @@ def _frac(k: int, n: int) -> str:
     return f"{k}/{n}"
 
 
+def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score interval for a binomial proportion ``k / n`` (95 % by default)."""
+    if n == 0:
+        return (float("nan"), float("nan"))
+    p = k / n
+    centre = (p + z * z / (2 * n)) / (1 + z * z / n)
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+def _ci(k: int, n: int) -> str:
+    lo, hi = wilson(k, n)
+    return f"{lo:.2f}–{hi:.2f}" if n else "–"
+
+
+def need_per_finger(spec: OB.ObjectSpec) -> float:
+    """Hidden per-finger grip the lift needs at its peak acceleration, m(g + a)/(2μ)."""
+    return spec.mass * (9.81 + LIFT_PEAK_ACC) / (2.0 * spec.friction[0])
+
+
 def mcnemar_one_sided(b: int, c: int) -> float:
     """Exact one-sided McNemar p-value: P(X >= b) for X ~ Binomial(b + c, 1/2)."""
     n = b + c
@@ -920,6 +952,72 @@ def summarize(rows: list[dict], profile_name: str) -> tuple[str, dict]:
     add("")
     metrics["windows"] = windows
 
+    # The map has 5 cubes per cell, so its window edges are coarse. Score each edge
+    # against the hidden need of many fresh cubes (no physics): the share of the
+    # class that the lower edge holds and, for a breakable class, the share whose
+    # break force the summed upper edge (2F) stays below, closing slowly (no
+    # overshoot) and fast (times the speed study's median 0.5 m/s overshoot there).
+    if speeds:
+        v0 = speeds[0]
+        fast_v = max(SPEED_TEST_SPEEDS)
+        add(
+            f"Window edges at {v0:g} m/s against {COVERAGE_SAMPLES} fresh cubes per class (no "
+            f"physics; need = m(g + {LIFT_PEAK_ACC:.3f})/(2μ) per finger):"
+        )
+        add("")
+        add(
+            "| class | window [N] | cubes whose need <= lower edge | need: median, p95, max "
+            f"| break force > 2 × upper edge: slow / fast ({fast_v:g} m/s) close |"
+        )
+        add("|---|---|---|---|---|")
+        metrics["window_coverage"] = {}
+        for cls in names:
+            ok = windows[f"{cls}|{v0:g}"]
+            specs = [sample_spec(config, cls, COVERAGE_FIRST + k) for k in range(COVERAGE_SAMPLES)]
+            need = np.array([need_per_finger(s) for s in specs])
+            breaks = np.array([s.break_force for s in specs if s.break_force is not None])
+            lo = min(ok) if ok else None
+            hi = max(ok) if ok else None
+            held = float(np.mean(need <= lo)) if ok else None
+            fast = [
+                r["peak_force"] / (2 * hi)
+                for r in rows
+                if ok
+                and r["study"] == "speed"
+                and r["cls"] == cls
+                and r["grip"] == hi
+                and r["speed"] == fast_v
+            ]
+            over = float(np.median(fast)) if fast else None
+            safe = float(np.mean(breaks > 2.0 * hi)) if ok and breaks.size else None
+            safe_fast = (
+                float(np.mean(breaks > 2.0 * hi * over))
+                if over is not None and breaks.size
+                else None
+            )
+            metrics["window_coverage"][cls] = {
+                "window": [lo, hi],
+                "held_by_lower_edge": held,
+                "need_median": float(np.median(need)),
+                "need_p95": float(np.percentile(need, 95)),
+                "need_max": float(need.max()),
+                "below_break_at_upper_edge_slow": safe,
+                "fast_overshoot_at_upper_edge": over,
+                "below_break_at_upper_edge_fast": safe_fast,
+            }
+            brk = "–"
+            if safe is not None:
+                brk = f"{safe:.1%} / " + (
+                    f"{safe_fast:.1%} (× {over:.3f})" if safe_fast is not None else "–"
+                )
+            add(
+                f"| {cls} | {f'{lo:g}–{hi:g}' if ok else 'none'} "
+                f"| {'–' if held is None else f'{held:.1%}'} "
+                f"| {np.median(need):.2f}, {np.percentile(need, 95):.2f}, {need.max():.2f} "
+                f"| {brk} |"
+            )
+        add("")
+
     cells_fv = [(f, v) for f in forces for v in speeds]
 
     def rate(c: str, fv: tuple[float, float]) -> float:
@@ -939,13 +1037,19 @@ def summarize(rows: list[dict], profile_name: str) -> tuple[str, dict]:
         "classes_missed_there": missed,
     }
     metrics["best_pooled"] = {"grip": pooled[0], "speed": pooled[1], "rate": pooled_rate}
+    verdict = (
+        f"**No single grip force succeeds on all {len(names)} classes.**"
+        if most < len(names)
+        else f"**One (force, speed) cell succeeds on all {len(names)} classes.**"
+    )
     add(
-        f"**No single grip force succeeds on all five classes.** Over the {len(cells_fv)} "
+        f"{verdict} Over the {len(cells_fv)} "
         f"(force, speed) cells the best worst-class success rate is {worst:.0%}. The most "
         f"classes one cell serves at >= {WINDOW_RATE:.0%} is {most} ("
         + ", ".join(f"{f:g} N at {v:g} m/s" for f, v in widest[:4])
         + (", ..." if len(widest) > 4 else "")
-        + f"), and those cells miss {', '.join(missed)}. The best single (force, speed) over "
+        + f"), and those cells miss {', '.join(missed) or 'no class'}. The best single "
+        "(force, speed) over "
         f"all classes pooled is {pooled[0]:g} N at {pooled[1]:g} m/s with {pooled_rate:.0%} "
         "success (a preview of T10's `best_fixed`)."
     )
@@ -1031,15 +1135,32 @@ def summarize(rows: list[dict], profile_name: str) -> tuple[str, dict]:
     # 4. Slip detector vs ground truth (attempts that reached the lift). The headline
     # is over the noise-free attempts; the noise study's noisy levels are separate.
     reached = [r for r in sweep if not r["broken"]]
+    # Only the full profile's noise cubes (NOISE_FIRST_FULL) are held out: the quick
+    # profile's (NOISE_FIRST_QUICK) were run when the debounce was chosen.
+    full_noise = {r["sample"] for r in sweep if r["study"] == "noise"} <= set(
+        range(NOISE_FIRST_FULL, NOISE_FIRST_FULL + NOISE_SAMPLES)
+    )
+    noise_label = "held-out" if full_noise else "noise-study"
+    noise_note = "new cubes" if full_noise else "cubes seen when the debounce was chosen"
     lifted = [r for r in reached if not r.get("noise_level")]
 
-    def score(rs: list[dict], fires=lambda r: r["ft_slip"]) -> dict:
-        tp = sum(r["gt_slip"] and fires(r) for r in rs)
-        fp = sum(fires(r) and not r["gt_slip"] for r in rs)
-        fn = sum(r["gt_slip"] and not fires(r) for r in rs)
+    def online(r: dict) -> bool:
+        return bool(r["ft_slip"])
+
+    def gt_line(r: dict) -> bool:
+        return bool(r["gt_slip"])
+
+    def score(
+        rs: list[dict],
+        fires: Callable[[dict], bool] = online,
+        gt: Callable[[dict], bool] = gt_line,
+    ) -> dict:
+        tp = sum(gt(r) and fires(r) for r in rs)
+        fp = sum(fires(r) and not gt(r) for r in rs)
+        fn = sum(gt(r) and not fires(r) for r in rs)
         return {
             "n": len(rs),
-            "gt": sum(r["gt_slip"] for r in rs),
+            "gt": sum(gt(r) for r in rs),
             "tp": tp,
             "fp": fp,
             "fn": fn,
@@ -1068,8 +1189,13 @@ def summarize(rows: list[dict], profile_name: str) -> tuple[str, dict]:
     add(f"| F/T fired | {head['tp']} (TP) | {head['fp']} (FP) |")
     add(f"| F/T silent | {head['fn']} (FN) | {head['tn']} (TN) |")
     add("")
+    metrics["slip_detector"]["precision_ci95"] = wilson(head["tp"], head["tp"] + head["fp"])
+    metrics["slip_detector"]["recall_ci95"] = wilson(head["tp"], head["tp"] + head["fn"])
+    p_ci = _ci(head["tp"], head["tp"] + head["fp"])
+    r_ci = _ci(head["tp"], head["tp"] + head["fn"])
     add(
-        f"Precision **{head['precision']:.3f}**, recall **{head['recall']:.3f}**. "
+        f"Precision **{head['precision']:.3f}** (95 % CI {p_ci}), "
+        f"recall **{head['recall']:.3f}** (95 % CI {r_ci}). "
         + (
             f"Detection time minus the GT time: median {np.median(lags) * 1000:.0f} ms "
             f"(p10 {np.percentile(lags, 10) * 1000:.0f} ms, p90 "
@@ -1081,25 +1207,34 @@ def summarize(rows: list[dict], profile_name: str) -> tuple[str, dict]:
     add("")
     add(
         "By study (map and speed: lift-off failures; release: mid-air slips; margin: grips "
-        "at 0.96-1.06x the need, partial slips; held-out: new cubes, noise-free, never used "
-        "to choose the threshold):"
+        f"at 0.96-1.06x the need, partial slips; {noise_label}: {noise_note}, noise-free; 95 % "
+        "Wilson intervals):"
     )
     add("")
-    add("| study | attempts | GT slips | TP | FP | FN | precision | recall | median lag |")
+    add(
+        "| study | attempts | GT slips | TP | FP | FN | precision (95 % CI) "
+        "| recall (95 % CI) | median lag |"
+    )
     add("|---|---|---|---|---|---|---|---|---|")
     metrics["slip_detector"]["by_study"] = {}
     groups = [(st, [r for r in lifted if r["study"] == st]) for st in ("map", "speed", "release")]
     groups += [("margin", [r for r in lifted if r["study"] == "margin"])]
-    groups += [("held-out", [r for r in lifted if r["study"] == "noise"])]
+    groups += [(noise_label, [r for r in lifted if r["study"] == "noise"])]
     for study, rs in groups:
         if not rs:
             continue
         sc = score(rs)
         s_lag = [r["ft_slip_time"] - r["gt_slip_time"] for r in rs if r["gt_slip"] and r["ft_slip"]]
         lag = f"{np.median(s_lag) * 1000:.0f} ms" if s_lag else "–"
+        prec = f"{sc['precision']:.3f} ({_ci(sc['tp'], sc['tp'] + sc['fp'])})"
+        rec = f"{sc['recall']:.3f} ({_ci(sc['tp'], sc['tp'] + sc['fn'])})"
+        if sc["tp"] + sc["fp"] == 0:
+            prec = "–"
+        if sc["tp"] + sc["fn"] == 0:
+            rec = "–"
         add(
             f"| {study} | {sc['n']} | {sc['gt']} | {sc['tp']} | {sc['fp']} | {sc['fn']} "
-            f"| {sc['precision']:.3f} | {sc['recall']:.3f} | {lag} |"
+            f"| {prec} | {rec} | {lag} |"
         )
         metrics["slip_detector"]["by_study"][study] = {
             **sc,
@@ -1129,11 +1264,37 @@ def summarize(rows: list[dict], profile_name: str) -> tuple[str, dict]:
         )
     )
     add("")
+    # Most ground-truth slips are cubes that never left the table, and most
+    # non-slips moved < 1 mm. The calls that are not obvious fell 1-50 mm.
+    hard = [r for r in lifted if 0.001 <= r["rel_drop"] < 0.05]
+    hs = score(hard)
+    metrics["slip_detector"]["hard_subset"] = hs
+    add(
+        f"Hard subset (the {hs['n']} noise-free attempts whose cube fell 1–50 mm relative to "
+        f"the fingers): TP {hs['tp']}, FP {hs['fp']}, FN {hs['fn']}; precision "
+        f"{hs['precision']:.3f} ({_ci(hs['tp'], hs['tp'] + hs['fp'])}), recall "
+        f"{hs['recall']:.3f} ({_ci(hs['tp'], hs['tp'] + hs['fn'])})."
+    )
+    add("")
+    add("Ground-truth line (largest fall relative to the fingers that counts as a slip):")
+    add("")
+    add("| GT line [mm] | GT slips | TP | FP | FN | precision | recall |")
+    add("|---|---|---|---|---|---|---|")
+    metrics["slip_detector"]["gt_lines"] = {}
+    for line_mm in (1.0, 2.0, SLIP_GT_M * 1000, 10.0):
+        sc = score(lifted, gt=lambda r, m=line_mm / 1000: r["rel_drop"] > m)
+        metrics["slip_detector"]["gt_lines"][f"{line_mm:g}"] = sc
+        add(
+            f"| {line_mm:g}{' (used)' if line_mm == SLIP_GT_M * 1000 else ''} | {sc['gt']} "
+            f"| {sc['tp']} | {sc['fp']} | {sc['fn']} | {sc['precision']:.3f} "
+            f"| {sc['recall']:.3f} |"
+        )
+    add("")
     noisy = [r for r in reached if r["study"] == "noise"]
     if noisy:
         add(
-            "Sensor noise (the held-out cubes again, white Gaussian noise on F_z and a_z every "
-            "tick):"
+            f"Sensor noise (the {noise_label} cubes again, white Gaussian noise on F_z and a_z "
+            "every tick):"
         )
         add("")
         add(
@@ -1398,6 +1559,17 @@ def make_figures(rows: list[dict], out: Path) -> list[Path]:
     return paths
 
 
+def _json_safe(value: object) -> object:
+    """``value`` with every NaN (a rate over no attempts) written as ``None`` (strict JSON)."""
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, float | np.floating) and math.isnan(value):
+        return None
+    return value
+
+
 def aggregate(out: Path, profile_name: str, profile: dict) -> int:
     try:
         rows = load_results(out, profile)
@@ -1406,7 +1578,9 @@ def aggregate(out: Path, profile_name: str, profile: dict) -> int:
         return 1
     text, metrics = summarize(rows, profile_name)
     (out / "summary.md").write_text(text + "\n")
-    (out / "metrics.json").write_text(json.dumps(metrics, indent=1, default=float))
+    (out / "metrics.json").write_text(
+        json.dumps(_json_safe(metrics), indent=1, allow_nan=False, default=float)
+    )
     figures = make_figures(rows, out)
     print(text)
     print("figures: " + ", ".join(str(p) for p in figures))

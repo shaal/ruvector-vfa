@@ -209,9 +209,9 @@ def build_spec(cfg: SceneConfig | None = None) -> mujoco.MjSpec:
     spec.modelname = "panda_vfa"
     spec.option.timestep = cfg.timestep
     # T05: elliptic friction cones with impratio 10 (MuJoCo's advice for grasping).
-    # With the default pyramidal cones and impratio 1 a held cube slid 4-11 mm in
-    # the grip over a 2 s lift and hold at 1.1x the grip it needs (1.6-5.7 mm at
-    # 2x); with these, 0.1-0.3 mm, and below the needed grip it still drops
+    # With the default pyramidal cones and impratio 1 a held cube slid 2.9-9.4 mm
+    # in the grip over a 2 s lift and hold at 1.1x the grip it needs (1.5-5.5 mm at
+    # 2x); with these, 0.12-0.47 mm, and below the needed grip it still drops
     # (ARCHITECTURE §3, D11).
     spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
     spec.option.impratio = IMPRATIO

@@ -657,7 +657,7 @@ def _squeeze(model, spec: OB.ObjectSpec, per_finger: float, seconds: float = 1.0
     trace: list[tuple[float, float, bool]] = []
     for command, duration in (
         (lambda: gripper.close(spec.size + 0.004), 0.5),
-        (lambda: gripper.squeeze(per_finger), seconds),
+        (lambda: gripper.squeeze(per_finger, speed=None), seconds),  # T04 measured the T03 law
     ):
         command()
         for _ in range(round(duration * O.CONTROL_HZ)):
@@ -789,7 +789,7 @@ def test_observation_does_not_reveal_the_class(config: OB.ObjectConfig) -> None:
     """A settled cube sinks into the table by class; the camera must not see it.
 
     T05's elliptic friction cones removed the friction coupling of the sink: in
-    seeds 0-2 a stiff cube sinks 0.08-0.15 mm and a soft one 0.46-0.75 mm (5.2-6.0x).
+    seeds 0-2 a stiff cube sinks 0.08-0.14 mm and a soft one 0.46-0.75 mm (5.2-6.0x).
     """
     for seed in range(2):
         observed, sinks = [], []

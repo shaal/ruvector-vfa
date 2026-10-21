@@ -512,7 +512,7 @@ def observe_cube(
     is the heading of a horizontal cube axis about world z, wrapped into
     [−π/4, π/4). A height less than ``REST_SINK_BAND`` below the rest height
     ``size / 2`` reads as the rest height (before the noise): the settled sink
-    into the table (seeds 0–2: 0.08–0.15 mm for stiff cubes, 0.46–0.75 mm
+    into the table (seeds 0–2: 0.08–0.14 mm for stiff cubes, 0.46–0.75 mm
     for soft ones, with T05's elliptic friction cones) would otherwise reveal
     the class. A lifted cube, or one that fell
     off the table, reads its true height. With zero noise ``rng`` is not used

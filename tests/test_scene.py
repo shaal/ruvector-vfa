@@ -65,6 +65,9 @@ def test_model_compiles_with_expected_structure(model: mujoco.MjModel) -> None:
     # 7 arm hinges + 2 finger slides + cube free joint (7 qpos / 6 dof).
     assert (model.nq, model.nv, model.nu) == (16, 15, 8)
     assert model.opt.timestep == pytest.approx(0.002)
+    # T05 (ARCHITECTURE D11): elliptic cones make F_min a sharp hold/drop threshold.
+    assert model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC
+    assert model.opt.impratio == pytest.approx(S.IMPRATIO) and S.IMPRATIO == 10.0
     assert model.nkey == 1 and model.key(0).name == S.HOME_KEY
     for name in (S.CUBE_BODY, S.HAND_BODY):
         assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, name) >= 0
@@ -172,7 +175,7 @@ def test_without_the_exclusion_a_squeeze_on_nothing_jams_the_fingers() -> None:
         S.place_cube(model, data, 0.2, 0.6)
         osc = O.OperationalSpaceController(model, data, ids=ids)
         gripper = Gripper(model, data, ids)
-        gripper.squeeze(50.0)
+        gripper.squeeze(50.0, speed=None)  # the T03 law: no closing-speed limit
         for _ in range(round(1.5 * O.CONTROL_HZ)):
             O.control_step(model, data, [osc, gripper], 1)
         gripper.open()

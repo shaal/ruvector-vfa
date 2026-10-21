@@ -42,7 +42,7 @@ Setup and demo instructions arrive with T01 and T16. You can already build the s
 uv sync
 uv run vfa scene-check --png runs/scene.png
 uv run python -m vfa.control.throughput      # time the OSC + gripper control loop
-uv run python scripts/spike_grip.py --quick  # grip force × closing speed × class (~30 s, 8 workers)
+uv run python scripts/spike_grip.py --quick  # grip force × closing speed × class (~30-60 s, 8 workers)
 ```
 
 ## License
