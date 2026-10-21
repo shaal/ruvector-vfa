@@ -77,7 +77,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~45 min. Tests < 20 s.
   - depends: T02
 
-- [ ] **T04 — Object property model (hidden classes, break rule, randomization)**
+- [x] **T04 — Object property model (hidden classes, break rule, randomization)**
   - Goal: situations where the *right* force depends on properties the camera cannot see.
   - Deliverables:
     - `vfa/sim/objects.py`: `ObjectClass` and `ObjectSpec` dataclasses; `sample_object(cls, rng) -> ObjectSpec`. Start with the five classes in `docs/ARCHITECTURE.md` §4 (`light_rigid`, `heavy_rigid`, `slippery`, `fragile_soft`, `heavy_slippery`). Ranges live in `configs/objects.toml`.

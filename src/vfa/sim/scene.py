@@ -376,12 +376,8 @@ def set_cube_solref(model: mujoco.MjModel, solref: Sequence[float]) -> None:
     integrator is ``mjINT_DISCRETE``, and so does this check.
     """
     ids = scene_ids(model)
-    clamps = not (
-        model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_REFSAFE
-        or model.opt.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
-    )
     model.geom_solref[ids.cube_geom] = _solref_pair(
-        solref, float(model.opt.timestep), refsafe=clamps
+        solref, float(model.opt.timestep), refsafe=_refsafe(model)
     )
 
 
@@ -587,6 +583,14 @@ def _set_home_key(spec: mujoco.MjSpec, cfg: SceneConfig) -> None:
 
 
 # ------------------------------------------------------------------------ helpers
+
+
+def _refsafe(model: mujoco.MjModel) -> bool:
+    """True if MuJoCo clamps a solref time constant to 2 × timestep in this model."""
+    return not (
+        model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_REFSAFE
+        or model.opt.integrator == mujoco.mjtIntegrator.mjINT_DISCRETE
+    )
 
 
 def _refresh_cube_inertia(model: mujoco.MjModel, ids: SceneIds) -> None:
