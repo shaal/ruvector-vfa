@@ -24,6 +24,7 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:$HOME/.cargo/bin:$PATH"   # gh, 
 - Run anything through uv: `uv run python ...`, `uv run pytest ...`.
 - The shell is **zsh**: unquoted `$VAR` does not word-split. Use arrays or literal arguments in loops.
 - `gh` is authenticated as `shaal`. The remote is `origin` → `github.com/shaal/ruvector-vfa`.
+- GitHub rejects pushes whose commits carry a private email ("push declined due to email privacy restrictions"). This clone's local git config uses `22901+shaal@users.noreply.github.com`. In a fresh clone, run `git config user.email 22901+shaal@users.noreply.github.com` before you commit.
 
 ## Verification probes (use these in the /ship confidence gate)
 
