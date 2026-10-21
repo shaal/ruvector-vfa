@@ -25,7 +25,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
 
 ## Phase A — Simulation foundation
 
-- [ ] **T01 — Project scaffold (uv, package layout, lint, tests, CI)**
+- [x] **T01 — Project scaffold (uv, package layout, lint, tests, CI)**
   - Goal: an empty but runnable Python project that every later task builds on.
   - Deliverables:
     - `pyproject.toml` (hatchling): name `ruvector-vfa`, import package `vfa` under `src/vfa/`, `requires-python = ">=3.11,<3.14"`.

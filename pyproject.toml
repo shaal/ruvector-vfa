@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ruvector-vfa"
+version = "0.1.0"
+description = "Force-aware, memory-augmented MuJoCo robot arm (Franka Panda) inspired by Vision-Force-Action and the ruvector-robotics cognitive crate."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11,<3.14"
+authors = [{ name = "Ofer Shaal" }]
+dependencies = [
+    "mujoco>=3.3,<4",
+    "gymnasium>=1.0",
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+video = ["imageio[ffmpeg]"]
+
+[project.scripts]
+vfa = "vfa.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vfa"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: physics sweeps and benchmarks (> ~5 s); excluded from the fast suite",
+    "render: tests that render offscreen with mujoco.Renderer",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[dependency-groups]
+dev = ["pytest", "ruff"]
