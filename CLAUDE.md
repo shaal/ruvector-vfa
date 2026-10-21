@@ -47,6 +47,19 @@ Rules:
 - Mark any test over ~5 s with `@pytest.mark.slow`.
 - Evidence in the gate must be command output you ran this session (test counts, metric values, PNG paths).
 
+## Review budget (overrides `/ship-next` step 6 in this project)
+
+The adversarial review stays, but it is bounded. The gate still needs an honest ≥ 95; the budget limits review rounds, not honesty.
+
+- **Severity.** *High*: changes a measured result, breaks an acceptance item, loses data, or is a physics or control bug that changes outcomes. *Medium*: wrong behavior on an edge case the benchmark does not reach, or a wrong number in a doc. *Low*: naming, wording, style, or a nice-to-have test.
+- **Rounds.** At most **2** refute rounds per task. After round 2, fix every high and medium finding and prove each fix with a test or a measured number; these proofs count as verification evidence. Fix a low finding if it takes ≤ 10 min; otherwise list it in the PR body under "Known limitations". Run a **round 3** only if round 2 found a high-severity issue, and review only those fixes. Never run a round 4.
+- **Reviewers per round, by task risk.** Launch them in one message so they run in parallel.
+  - **Full** (2–3 reviewers; the correctness and spec-fit lens on `opus`): T08, T09, T10, T11, T12, T13, T14, T15, T17a, T18, T21, T23, T24. Their code produces or changes the measured results.
+  - **Light** (1 reviewer, correctness and spec fit, on `opus`): T07, T16, T17, T19, T20, T22. Plumbing, CLI, charts, docs, and a backend whose parity test guards the results.
+  - A task not listed here gets the full review.
+- **If the gate cannot reach 95 inside the budget**, take the `/ship-next` fail path. Do not add rounds.
+- **Docs record decisions and measured numbers, not review history.** Keep each design paragraph in `docs/ARCHITECTURE.md` under about 150 words. Put mechanism details in the module docstring. Do not write "review round N" notes in docs.
+
 ## Runtime limits (long runs must be chunked)
 
 - **One shell command can run for at most 10 minutes** (the agent's foreground limit). Design every command to finish in **≤ 9 min**.
