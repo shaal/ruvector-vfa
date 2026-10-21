@@ -60,7 +60,22 @@ The memory and cognition layers mirror the `ruvector-robotics` Rust crate (`Memo
 
 **Scene (T02).** The pristine MuJoCo Menagerie Panda (vendored at commit `feadf76d42f8a2162426f7d226a3b539556b3bf5`, Apache-2.0) loads into `mujoco.MjSpec`. Code then edits the spec: torque `motor` actuators replace the arm's position servos (limits 87/87/87/87/12/12/12 N·m), a table, a free-joint cube, a place target, an `ee` site, and a wrist F/T site with `force` + `torque` sensors are added. The vendored XML is never edited.
 
-**Gripper.** The menagerie gripper is a position servo on a tendon (±100 N force range). T05 measures whether it can deliver a repeatable squeeze force. If not, it becomes a force-controlled tendon `motor` (ctrl = squeeze force in N).
+As built (`vfa/sim/scene.py`):
+
+- **Frames.** The table top is at world `z = 0` and the robot base sits on it at the origin, so the world frame is the robot base frame. The floor is at `z = −0.75`.
+- **Control vector.** `ctrl[0:7]` = arm joint torques (N·m, `motor1..7`); `ctrl[7]` = the menagerie gripper servo (`actuator8`, 0 = closed, 255 = open).
+- **Sites.** `ee` = fingertip center (Franka TCP, 0.1034 m from the flange along the hand z axis). `wrist_ft` = the link7 → hand flange. `place_target` lies on the table. `left_pad` / `right_pad` cover all five fingertip pad boxes for the `left_touch` / `right_touch` sensors.
+- **Touch vs. cube force.** A touch sensor counts a contact on its finger when MuJoCo's ray test (contact point along the contact normal) hits the pad site, whatever the other object is. `finger_cube_forces()` counts every finger↔cube contact and nothing else. Measured in T02 at the end state of the matching test (the tests assert the relation, not the exact values):
+  - face-on pad grasp of the cube: both read the same force, to 1e-9;
+  - open fingertips pushed 1 cm into the table by an impedance law: touch ≈ 2.08–2.10 N per finger, helper 0;
+  - a 12 cm cube pushed up into the fingertips with 15 N, after 0.12 s: touch ≈ 2.6 N per finger, helper ≈ 6.9–7.7 N per finger, because most fingertip-end contacts are on the finger mesh outside the pad site.
+
+  Cube-specific logic (T04's break rule, grasp checks) must use `finger_cube_forces()`. Treat touch as a pad-contact signal, not a force measurement.
+- **Wrist F/T sign.** The reading is the force that link7 applies to the hand subtree, in the hand frame. At `home` the hand z axis points down, so the hand's weight reads as `F ≈ (0, 0, −7.46) N` (0.76 kg × g).
+- **Per-episode hooks.** `set_cube_mass`, `set_cube_size`, `set_cube_friction`, `set_cube_solref`, and `place_cube` edit a compiled model in place. A test proves that every numeric model array then equals a fresh compile, so episode loops never recompile. A recompile is cheap anyway: the first `build_scene()` takes ≈ 0.33 s (mesh processing), later ones ≈ 0.025 s (MuJoCo caches the meshes). The hooks reject a cube size outside 5 mm–30 cm, a `solref` time constant below 2 × timestep (MuJoCo would clamp it silently), and a footprint off the table or within 0.16 m of the base axis.
+- **Hot loops.** Resolving names (`scene_ids`) costs more than one physics step. Resolve the ids once and pass `ids` to `gravity_compensation`, `read_wrist_ft`, `read_finger_touch`, and `finger_cube_forces`.
+
+**Gripper.** The menagerie gripper is a position servo on a tendon (±100 N force range). T05 measures whether it can deliver a repeatable squeeze force. If not, it becomes a force-controlled tendon `motor` (ctrl = squeeze force in N). T02 measurement: the servo's stiffness is only 100 N/m on the tendon, so fully closed (ctrl 0) on the 5 cm cube it squeezes with ≈ 1.25 N per finger. That is far below the §4 windows (`heavy_slippery` needs ≈ 17 N), so T05 should expect to replace it.
 
 **Contact parameters.** MuJoCo combines two geoms' friction by taking the **maximum** unless one geom has a higher `priority`. The cube geom gets `priority=1`, so *its* friction and `solref` govern finger contacts. Without this, high-friction finger pads hide the cube's friction and the "slippery" class does not exist. Use `condim=4` on the cube so torsional slip is modeled.
 

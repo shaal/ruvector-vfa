@@ -45,7 +45,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~20 min. Tests < 10 s.
   - depends: none
 
-- [ ] **T02 — Panda + table + cube scene (MjSpec builder, torque actuators, wrist F/T)**
+- [x] **T02 — Panda + table + cube scene (MjSpec builder, torque actuators, wrist F/T)**
   - Goal: a MuJoCo scene with force sensing, built in code from a pristine vendored robot model.
   - Deliverables:
     - Vendor the pristine MuJoCo Menagerie Panda at commit `feadf76d42f8a2162426f7d226a3b539556b3bf5` into `assets/menagerie/franka_emika_panda/` (`panda.xml`, `hand.xml`, `assets/`, `LICENSE`). Source: `~/.cache/robot_descriptions/mujoco_menagerie` if present, else a sparse clone of `github.com/google-deepmind/mujoco_menagerie` at that SHA. Add `assets/menagerie/NOTICE.md` (Apache-2.0, upstream URL, SHA). Do not edit the vendored XML.

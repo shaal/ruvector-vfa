@@ -1,18 +1,20 @@
 """Command-line entry point for ``vfa``.
 
-Stub for T01: prints the version and the planned subcommand list. Later tasks
-wire in the real subcommands (``scene-check`` in T02, ``benchmark`` in T10,
-``demo`` in T16).
+With no subcommand it prints the version and the subcommand list. Subcommands
+are wired in task-by-task: ``scene-check`` (T02), ``benchmark`` (T10), ``demo``
+(T16). A subcommand gets every argument after its name, so
+``vfa scene-check --help`` shows the subcommand's own help.
 """
 
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
+import sys
+from collections.abc import Callable, Sequence
 
 from vfa import __version__
 
-# (name, one-line help, roadmap task that implements it). The stub lists them
+# (name, one-line help, roadmap task that implements it). All are listed
 # so ``vfa --help`` shows the shape of the finished tool.
 _SUBCOMMANDS: tuple[tuple[str, str, str], ...] = (
     ("scene-check", "build the Panda scene, hold a pose, render a PNG", "T02"),
@@ -21,10 +23,20 @@ _SUBCOMMANDS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _scene_check(argv: Sequence[str]) -> int:
+    from vfa.sim import scene_check
+
+    return scene_check.main(argv, prog="vfa scene-check")
+
+
+# Implemented subcommands: name -> handler(remaining argv) -> exit code.
+_HANDLERS: dict[str, Callable[[Sequence[str]], int]] = {"scene-check": _scene_check}
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the top-level argument parser with the subcommand stubs listed."""
-    epilog_lines = ["planned subcommands (implemented task-by-task):"]
-    epilog_lines += [f"  {name:<12} {help_} [{task}]" for name, help_, task in _SUBCOMMANDS]
+    epilog_lines = ["subcommands (implemented task-by-task):"]
+    epilog_lines += [f"  {_describe(name, help_, task)}" for name, help_, task in _SUBCOMMANDS]
     parser = argparse.ArgumentParser(
         prog="vfa",
         description="Force-aware, memory-augmented MuJoCo Franka Panda.",
@@ -39,17 +51,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _describe(name: str, help_: str, task: str) -> str:
+    status = "" if name in _HANDLERS else " (not implemented yet)"
+    return f"{name:<12} {help_} [{task}]{status}"
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Entry point. With no subcommand, print the version and subcommand list."""
+    """Entry point. Dispatch a subcommand, or print the version and subcommand list."""
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in _HANDLERS:
+        return _HANDLERS[argv[0]](argv[1:])
     parser = build_parser()
     args, extra = parser.parse_known_args(argv)
-    del args  # only --version is defined so far
+    del args  # only --version is defined at the top level
     if extra:
         parser.error(f"subcommand not implemented yet: {' '.join(extra)}")
     print(f"ruvector-vfa {__version__}")
-    print("subcommands (not implemented yet):")
+    print("subcommands:")
     for name, help_, task in _SUBCOMMANDS:
-        print(f"  {name:<12} {help_} [{task}]")
+        print(f"  {_describe(name, help_, task)}")
     return 0
 
 
