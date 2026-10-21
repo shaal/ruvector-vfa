@@ -49,15 +49,16 @@ Rules:
 
 ## Review budget (overrides `/ship-next` step 6 in this project)
 
-The adversarial review stays, but it is bounded. The gate still needs an honest ≥ 95; the budget limits review rounds, not honesty.
+The adversarial review stays, and the gate still needs an honest ≥ 95. The budget cuts rounds that only find doc and style issues, not rounds that find code bugs. (Evidence from T02–T05: rounds 4–7 of T03 and T05 still found real control bugs, and the late rounds of T02, T04 and T05 found mostly doc nits.)
 
-- **Severity.** *High*: changes a measured result, breaks an acceptance item, loses data, or is a physics or control bug that changes outcomes. *Medium*: wrong behavior on an edge case the benchmark does not reach, or a wrong number in a doc. *Low*: naming, wording, style, or a nice-to-have test.
-- **Rounds.** At most **2** refute rounds per task. After round 2, fix every high and medium finding and prove each fix with a test or a measured number; these proofs count as verification evidence. Fix a low finding if it takes ≤ 10 min; otherwise list it in the PR body under "Known limitations". Run a **round 3** only if round 2 found a high-severity issue, and review only those fixes. Never run a round 4.
+- **Severity: judge it yourself with these definitions, not the reviewer's label.** *High*: changes a measured result, breaks an acceptance item, loses data, lets the agent see hidden class information (any leak counts, even a 0.1 mm one), or is a physics or control bug that changes outcomes. *Medium*: wrong behavior on an edge case the benchmark does not reach. *Low*: naming, wording, style, a nice-to-have test, or a wrong number in a doc.
+- **Stop rule.** Run another round only if the previous round found a high or medium issue **in code**. Stop when a round finds only low or doc issues. Fix a low finding if it takes ≤ 10 min; otherwise list it in the PR body under "Known limitations".
+- **Docs-vs-numbers check: once, at the end** (one reviewer on the final code), not in every round.
+- **Ceiling: 6 rounds.** If round 6 still finds a high or medium code issue, take the `/ship-next` fail path so a human looks at the design.
 - **Reviewers per round, by task risk.** Launch them in one message so they run in parallel.
   - **Full** (2–3 reviewers; the correctness and spec-fit lens on `opus`): T08, T09, T10, T11, T12, T13, T14, T15, T17a, T18, T21, T23, T24. Their code produces or changes the measured results.
   - **Light** (1 reviewer, correctness and spec fit, on `opus`): T07, T16, T17, T19, T20, T22. Plumbing, CLI, charts, docs, and a backend whose parity test guards the results.
   - A task not listed here gets the full review.
-- **If the gate cannot reach 95 inside the budget**, take the `/ship-next` fail path. Do not add rounds.
 - **Docs record decisions and measured numbers, not review history.** Keep each design paragraph in `docs/ARCHITECTURE.md` under about 150 words. Put mechanism details in the module docstring. Do not write "review round N" notes in docs.
 
 ## Runtime limits (long runs must be chunked)
