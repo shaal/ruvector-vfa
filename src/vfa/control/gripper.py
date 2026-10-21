@@ -38,7 +38,7 @@ Saturation (menagerie servo): the ctrl floor (0) caps the squeeze at
 for the position commands; tested). T05 handoff: with such a motor, a squeeze
 of >= 5 N that closes on *nothing* drives the light fingers through their 0
 joint limit and into each other, and they jam (measured in T03: −11 mm at 5 N,
-−47 mm at 20 N, still there after ``open()``). The servo cannot do this (its
+−49 mm at 20 N, still there after ``open()``). The servo cannot do this (its
 force falls to 0 as the fingers close). A motor swap needs an end stop or a
 closing-speed limit.
 """
@@ -119,7 +119,12 @@ class Gripper:
         jnt = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, n) for n in FINGER_JOINTS]
         self.max_width = float(sum(model.jnt_range[j, 1] for j in jnt))
         self.saturated = False  # True if the last apply() clipped ctrl or force
-        self.command = GripperCommand("position", self.max_width)
+        self._command = GripperCommand("position", self.max_width)
+
+    @property
+    def command(self) -> GripperCommand:
+        """The active command (immutable). Change it with ``open``, ``close``, or ``squeeze``."""
+        return self._command
 
     # ------------------------------------------------------------------ commands
 
@@ -132,8 +137,7 @@ class Gripper:
         width = _real("width", width)
         if not 0.0 <= width <= self.max_width:
             raise ValueError(f"width must be in [0, {self.max_width}] m, got {width!r}")
-        self.command = GripperCommand("position", width)
-        self.apply()
+        self._set_command(GripperCommand("position", width))
 
     def squeeze(self, force_n: float) -> None:
         """Force command: press each finger on the object with ``force_n`` [N] (at rest).
@@ -145,8 +149,16 @@ class Gripper:
         force_n = _real("force_n", force_n)
         if not 0.0 <= force_n <= MAX_SQUEEZE_N:
             raise ValueError(f"force_n must be in [0, {MAX_SQUEEZE_N:g}] N, got {force_n!r}")
-        self.command = GripperCommand("force", force_n)
-        self.apply()
+        self._set_command(GripperCommand("force", force_n))
+
+    def _set_command(self, command: GripperCommand) -> None:
+        """Make ``command`` active and write ``ctrl``; keep the old command if that raises."""
+        previous, self._command = self._command, command
+        try:
+            self.apply()
+        except FloatingPointError:
+            self._command = previous
+            raise
 
     def apply(self) -> float:
         """Write ``ctrl`` for the active command at the current finger state. Returns it.
@@ -156,11 +168,12 @@ class Gripper:
         """
         length = float(self.data.ten_length[self._tendon])
         speed = float(self.data.ten_velocity[self._tendon])
-        if self.command.mode == "position":
-            target_length = 0.5 * self.command.value
+        command = self._command
+        if command.mode == "position":
+            target_length = 0.5 * command.value
             force = self.servo_kp * (target_length - length) - self.servo_kd * speed
         else:
-            force = -self.command.value / self._coef - self.servo_kd * speed
+            force = -command.value / self._coef - self.servo_kd * speed
         reachable = min(max(force, self._force_lo), self._force_hi)
         b0, b1, b2 = self._bias
         ctrl = (reachable - b0 - b1 * length - b2 * speed) / self._gain

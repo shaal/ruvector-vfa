@@ -95,18 +95,130 @@ def test_reach_every_workspace_corner(model, ids, corner: int, hz: int) -> None:
     assert pos_err < POS_TOL_M and rot_err < ROT_TOL_RAD, (target, pos_err, rot_err)
 
 
-@pytest.mark.parametrize("yaw", [-math.pi / 2, math.pi / 2 - 1e-9])
-def test_reach_every_workspace_corner_at_the_yaw_limits(model, ids, yaw: float) -> None:
-    """|yaw| <= π/2 is reachable everywhere in the box (joint 7 has ~0.1 rad to spare)."""
+@pytest.mark.parametrize("yaw", [-O._YAW_LIMIT, O._YAW_LIMIT])
+def test_reach_every_workspace_corner_at_the_yaw_band_edges(model, ids, yaw: float) -> None:
+    """|yaw| <= π/2 + GRASP_YAW_MARGIN is reachable in the whole box, clear of joint 7's limit."""
+    q7 = model.joint(S.ARM_JOINTS[6])
     for target in itertools.product(*zip(O.WORKSPACE_LOW, O.WORKSPACE_HIGH, strict=True)):
-        pos_err, rot_err = _reach(model, ids, target, yaw=yaw)
+        data = _fresh(model)
+        osc = O.OperationalSpaceController(model, data, ids=ids)
+        osc.set_target(target, yaw=yaw)
+        headroom = math.inf
+        for _ in range(round(REACH_SECONDS * O.CONTROL_HZ)):
+            O.control_step(model, data, [osc], 1)
+            q = data.qpos[ids.arm_qpos[6]]
+            headroom = min(headroom, q - q7.range[0], q7.range[1] - q)
+            assert not osc.at_joint_limit, (yaw, target)
+        mujoco.mj_forward(model, data)
+        pos_err, rot_err = _ee_errors(data, ids, target, O.top_down_rot(yaw))
         assert pos_err < POS_TOL_M and rot_err < ROT_TOL_RAD, (yaw, target, pos_err, rot_err)
+        assert headroom > O.JOINT_LIMIT_MARGIN, (yaw, target, headroom)
 
 
 @pytest.mark.parametrize("yaw", [-1.2, -0.5, 0.5, 1.2])
 def test_reach_with_yaw(model, ids, yaw: float) -> None:
     pos_err, rot_err = _reach(model, ids, (0.45, 0.1, 0.2), yaw=yaw)
     assert pos_err < POS_TOL_M and rot_err < ROT_TOL_RAD, (yaw, pos_err, rot_err)
+
+
+def test_set_target_rejects_yaws_outside_the_band_or_turns_past_pi(model, ids) -> None:
+    data = _fresh(model)
+    osc = O.OperationalSpaceController(model, data, ids=ids)
+    for yaw in (O._YAW_LIMIT + 1e-6, -2.0, 3.0):
+        with pytest.raises(ValueError, match="within"):
+            osc.set_target((0.5, 0.0, 0.3), yaw=yaw)
+    osc.set_target((0.5, 0.0, 0.3), rot=O.top_down_rot(2.0))  # rot= skips the yaw checks
+
+
+def test_turn_past_pi_after_a_twist_is_rejected_and_wrap_near_avoids_it(model, ids) -> None:
+    """Regression (T03 review): an external twist left the hand at yaw −1.61; the next
+    target +1.56 was 3.17 rad away, the reference turned the short way through yaw −π,
+    and joint 7 stalled at its limit (34 mm / 26° off after 4 s, saturated False)."""
+    data = _fresh(model)
+    osc = O.OperationalSpaceController(model, data, ids=ids)
+    target = (0.5, 0.0, 0.2)
+    osc.set_target(target, yaw=-math.pi / 2)
+    _run(model, data, [osc], 2.0)
+    data.xfrc_applied[ids.hand_body, 3:] = (0.0, 0.0, -2.4)  # twist about −z
+    _run(model, data, [osc], 1.0)
+    osc.hold_current()
+    data.xfrc_applied[:] = 0.0
+    assert osc.ee_yaw() < -math.pi / 2 - 0.03  # outside [−π/2, π/2)
+    naive = O.wrap_grasp_yaw(math.pi / 2 - 0.01)
+    with pytest.raises(ValueError, match="±π"):
+        osc.set_target(target, yaw=naive)
+    yaw = O.wrap_grasp_yaw(math.pi / 2 - 0.01, near=osc.ee_yaw())
+    assert yaw == pytest.approx(naive - math.pi)  # the same grasp, a 0.03 rad turn
+    osc.set_target(target, yaw=yaw)
+    _run(model, data, [osc], 1.0)
+    pos_err, rot_err = _ee_errors(data, ids, target, O.top_down_rot(yaw))
+    assert pos_err < 1e-3 and rot_err < math.radians(0.5)
+
+
+def test_wrap_grasp_yaw_near_picks_the_closest_equivalent_in_the_band() -> None:
+    half = math.pi / 2
+    for yaw, near, expected in (
+        (half - 0.01, -half - 0.04, -half - 0.01),  # the far edge's twin is closer
+        (half - 0.01, 0.0, half - 0.01),
+        (0.0, -half - 0.04, 0.0),  # ±π are outside the band
+        (half + 0.02, half + 0.04, half + 0.02),  # stays above +π/2 inside the margin
+        (7.0, 0.0, 7.0 - 2 * math.pi),
+    ):
+        got = O.wrap_grasp_yaw(yaw, near=near)
+        assert got == pytest.approx(expected), (yaw, near, got)
+        assert abs(got) <= O._YAW_LIMIT
+        turns = (yaw - got) / math.pi
+        assert turns == pytest.approx(round(turns), abs=1e-9)
+    with pytest.raises(ValueError):
+        O.wrap_grasp_yaw(0.0, near=math.nan)
+
+
+def test_at_joint_limit_flags_a_stall_the_torque_limits_miss(model, ids) -> None:
+    """Yaw 2.3 (via rot=) at (0.5, 0, 0.3) runs joint 7 into its range end: the hand
+    stalls 6.6° short with no motor saturated (measured in T03)."""
+    data = _fresh(model)
+    osc = O.OperationalSpaceController(model, data, ids=ids)
+    osc.set_target((0.5, 0.0, 0.3), rot=O.top_down_rot(2.3))
+    flagged = 0
+    for _ in range(round(3.0 * O.CONTROL_HZ)):
+        O.control_step(model, data, [osc], 1)
+        flagged += osc.at_joint_limit
+    mujoco.mj_forward(model, data)
+    assert flagged > 0.3 * O.CONTROL_HZ, flagged
+    assert osc.at_joint_limit and not osc.saturated
+    assert osc.errors()[1] > math.radians(5.0), "the hand must stall short of yaw 2.3"
+
+
+def test_ee_yaw_reads_the_top_down_yaw(model, ids) -> None:
+    data = _fresh(model)
+    osc = O.OperationalSpaceController(model, data, ids=ids)
+    for yaw in (-1.2, 0.0, 0.7):
+        osc.set_target((0.45, 0.1, 0.25), yaw=yaw)
+        _run(model, data, [osc], 2.0)
+        assert osc.ee_yaw() == pytest.approx(yaw, abs=math.radians(0.5))
+
+
+def test_long_move_from_a_non_home_pose_does_not_overshoot(model, ids) -> None:
+    """Regression (T03 review): per-axis apparent-mass damping underdamped the coupled
+    modes and overshot this move by 12.7 mm (500 Hz) / 13.4 mm (100 Hz)."""
+    start, goal = np.array([0.579, -0.019, 0.15]), np.array([0.389, -0.033, 0.237])
+    for hz in (O.CONTROL_HZ, 100):
+        data = _fresh(model)
+        osc = O.OperationalSpaceController(model, data, ids=ids, control_hz=hz)
+        osc.set_target(start)
+        _run(model, data, [osc], 3.0, hz)
+        direction = (goal - data.site_xpos[ids.ee_site]) / np.linalg.norm(
+            goal - data.site_xpos[ids.ee_site]
+        )
+        osc.set_target(goal)
+        overshoot = 0.0
+        substeps = O.substeps_for(model, hz)
+        for _ in range(round(2.5 * hz)):
+            O.control_step(model, data, [osc], substeps)
+            overshoot = max(overshoot, float((data.site_xpos[ids.ee_site] - goal) @ direction))
+        mujoco.mj_forward(model, data)
+        assert overshoot < 5e-4, (hz, overshoot)
+        assert np.linalg.norm(data.site_xpos[ids.ee_site] - goal) < 1e-3
 
 
 def test_wrap_grasp_yaw_uses_the_half_turn_symmetry() -> None:
@@ -171,6 +283,17 @@ def test_per_axis_stiffness_and_pure_force_gives_no_rotation(model, ids) -> None
     assert rot < math.radians(0.5)
 
 
+def test_lift_episode_carries_the_cube() -> None:
+    """The timed episode is a real grasp-and-lift (contacts and all), not an idle loop.
+
+    It is not a tuned grasp: the cube creeps in the 1 N grip (refer to throughput.py).
+    """
+    run = throughput.run_lift_episode(O.CONTROL_HZ)
+    assert run.sim_s == pytest.approx(10.0)
+    assert run.lift_m > 0.08
+    assert run.min_finger_force_n == pytest.approx(throughput.SQUEEZE_N, rel=0.05)
+
+
 @pytest.mark.perf
 def test_throughput_10s_lift_episode_under_1s_wall(capsys) -> None:
     runs = [throughput.run_lift_episode(O.CONTROL_HZ) for _ in range(3)]
@@ -187,13 +310,16 @@ def test_throughput_10s_lift_episode_under_1s_wall(capsys) -> None:
     assert best.wall_s <= 1.0
     # One core: CPU time cannot exceed wall time by more than a sliver.
     assert best.cpu_s <= 1.1 * best.wall_s
-    # The episode carries the cube (contacts and all), not an idle loop. It is
-    # not a tuned grasp: the cube creeps in the 1 N grip (refer to throughput.py).
-    assert best.lift_m > 0.08
-    assert best.min_finger_force_n == pytest.approx(throughput.SQUEEZE_N, rel=0.05)
+    assert best.lift_m > 0.08  # the same grasp-and-lift as test_lift_episode_carries_the_cube
 
 
 # --------------------------------------------------------------- torque law
+
+
+def _sqrtm_psd(a: np.ndarray) -> np.ndarray:
+    """Symmetric square root of a symmetric positive semi-definite matrix."""
+    w, v = np.linalg.eigh(a)
+    return (v * np.sqrt(np.maximum(w, 0.0))) @ v.T
 
 
 def _reference_tau(model, data, ids, osc: O.OperationalSpaceController) -> np.ndarray:
@@ -211,11 +337,17 @@ def _reference_tau(model, data, ids, osc: O.OperationalSpaceController) -> np.nd
     lam = np.linalg.inv(lam_inv)
     g = osc.gains
     k = np.array([*g.pos_stiffness, *g.rot_stiffness])
-    d = 2.0 * g.damping_ratio * np.sqrt(k / np.diag(lam_inv))  # apparent mass 1/(Λ⁻¹)_ii
-    if g.pos_damping is not None:
-        d[:3] = g.pos_damping
-    if g.rot_damping is not None:
-        d[3:] = g.rot_damping
+    # Modal damping in the symmetric-root form D = 2ζ·Λ½·(Λ^-½·K·Λ^-½)½·Λ½
+    # (a different factorization from the controller's K½·V·(2ζ/Ω)·Vᵀ·K½).
+    lam_half = _sqrtm_psd(lam)
+    lam_half_inv = np.linalg.inv(lam_half)
+    d = 2.0 * g.damping_ratio * lam_half @ _sqrtm_psd(lam_half_inv @ np.diag(k) @ lam_half_inv)
+    d = d @ lam_half
+    for block, fixed in ((slice(0, 3), g.pos_damping), (slice(3, 6), g.rot_damping)):
+        if fixed is not None:  # explicit damping: a diagonal block, no coupling
+            d[block, :] = 0.0
+            d[:, block] = 0.0
+            d[block, block] = np.diag(fixed)
     # Orientation error from rotation matrices: R_err = R_t·Rᵀ → axis·angle.
     r_err = ref.rot @ data.site_xmat[ids.ee_site].reshape(3, 3).T
     angle = math.acos(min(1.0, max(-1.0, 0.5 * (np.trace(r_err) - 1.0))))
@@ -225,7 +357,7 @@ def _reference_tau(model, data, ids, osc: O.OperationalSpaceController) -> np.nd
     rot_err = axis * (angle / (2.0 * math.sin(angle))) if angle > 1e-9 else 0.5 * axis
     err = np.concatenate((ref.pos - data.site_xpos[ids.ee_site], rot_err))
     qvel = data.qvel[arm]
-    wrench = k * err + d * (ref.vel - jac @ qvel)
+    wrench = k * err + d @ (ref.vel - jac @ qvel)
     posture = g.null_stiffness * (osc.posture - data.qpos[ids.arm_qpos]) - g.null_damping * qvel
     null_t = np.eye(7) - jac.T @ lam @ jac @ mass_inv
     tau = jac.T @ wrench + data.qfrc_bias[arm] + null_t @ posture
@@ -361,6 +493,18 @@ def test_non_finite_torques_raise_instead_of_reaching_the_motors(model, ids) -> 
     osc.data.qvel[ids.arm_dof[2]] = math.nan
     with pytest.raises(FloatingPointError):
         osc.compute()
+    # A non-finite qpos breaks the dynamics (eigh raises LinAlgError): still a
+    # FloatingPointError, and apply() still rolls the reference back.
+    data = _fresh(model)
+    osc = O.OperationalSpaceController(model, data, ids=ids)
+    osc.set_target((0.4, 0.1, 0.3))
+    data.qpos[ids.arm_qpos[1]] = math.nan
+    mujoco.mj_forward(model, data)
+    ctrl, before = data.ctrl.copy(), osc.reference()
+    with pytest.raises(FloatingPointError):
+        osc.apply()
+    np.testing.assert_array_equal(data.ctrl, ctrl)
+    np.testing.assert_array_equal(osc.reference().pos, before.pos)
 
 
 def test_torques_are_clipped_to_the_motor_limits(model, ids) -> None:
@@ -520,10 +664,17 @@ def test_substeps_for_the_physics_rate(model) -> None:
     assert O.substeps_for(model, 250) == 2
     assert O.substeps_for(model, 100) == 5
     assert O.substeps_for(model, 125.0) == 4
-    assert O.substeps_for(model, 0.5) == O.MAX_SUBSTEPS
     for bad in (300, 499, 1000, 0, -100, math.nan, math.inf, True, "500", 5e-324, 1e-10, 0.4):
         with pytest.raises(ValueError):
             O.substeps_for(model, bad)
+    # Below the floor (ARCHITECTURE §2): rates that divide 500 Hz but lose the reach.
+    for slow in (50, 25, 10, 0.5, O.MIN_CONTROL_HZ - 1e-9):
+        with pytest.raises(ValueError, match="floor"):
+            O.substeps_for(model, slow)
+    fine = S.build_scene()
+    fine.opt.timestep = 1e-6  # 100 Hz would hold each torque for 10000 steps
+    with pytest.raises(ValueError, match="substeps"):
+        O.substeps_for(fine, 100)
 
 
 def test_control_step_holds_commands_across_substeps(model, ids) -> None:
@@ -551,6 +702,35 @@ def test_control_step_holds_commands_across_substeps(model, ids) -> None:
         with pytest.raises(ValueError):
             O.control_step(model, data, [osc], substeps=bad)
         assert data.time == t1, "a rejected tick must not step the physics"
+
+
+def test_control_step_accepts_a_one_shot_iterable_and_rejects_duplicates(model, ids) -> None:
+    """Regression: the rate check used up a generator, so no controller ran and the arm sagged."""
+    data = _fresh(model)
+    osc = O.OperationalSpaceController(model, data, ids=ids)
+    gripper = Gripper(model, data, ids)
+    ee0 = data.site_xpos[ids.ee_site].copy()
+    for _ in range(round(0.5 * O.CONTROL_HZ)):
+        O.control_step(model, data, (c for c in (osc, gripper)), 1)
+    mujoco.mj_forward(model, data)
+    assert np.linalg.norm(data.site_xpos[ids.ee_site] - ee0) < 1e-4
+    assert np.any(data.ctrl[ids.arm_actuators] != 0.0)
+    t0, ref = data.time, osc.reference()
+    with pytest.raises(ValueError, match="twice"):
+        O.control_step(model, data, [osc, osc], 1)  # would advance the reference twice
+    assert data.time == t0
+    np.testing.assert_array_equal(osc.reference().pos, ref.pos)
+
+
+def test_rate_and_gains_are_read_only(model, ids) -> None:
+    """The reference step is sized for control_hz; gains change only through set_gains."""
+    data = _fresh(model)
+    osc = O.OperationalSpaceController(model, data, ids=ids, control_hz=250)
+    with pytest.raises(AttributeError):
+        osc.control_hz = 100  # type: ignore[misc]
+    with pytest.raises(AttributeError):
+        osc.gains = O.OSCGains(pos_stiffness=100.0)  # type: ignore[misc]
+    assert osc.control_hz == 250.0 and osc.gains == O.OSCGains()
 
 
 def test_controller_and_gripper_share_a_control_tick(model, ids) -> None:
@@ -654,7 +834,7 @@ def test_controller_needs_forwarded_data_and_a_valid_posture(model, ids) -> None
     with pytest.raises(ValueError, match="mj_forward"):
         O.OperationalSpaceController(model, mujoco.MjData(model), ids=ids)
     data = _fresh(model)
-    for hz in (300, 0, math.nan):
+    for hz in (300, 0, math.nan, 50):
         with pytest.raises(ValueError):
             O.OperationalSpaceController(model, data, ids=ids, control_hz=hz)
     for posture in ((0.0,) * 6, (0.0,) * 6 + (math.nan,)):
@@ -749,6 +929,7 @@ def test_throughput_cli_prints_the_table(capsys) -> None:
     "argv",
     [
         ["--hz", "300"],
+        ["--hz", "50"],
         ["--hz", *["500"] * 9],
         ["--seconds", "0"],
         ["--seconds", "nan"],
@@ -771,7 +952,7 @@ def test_throughput_cli_accepts_its_upper_bounds(monkeypatch, capsys) -> None:
         return throughput.ThroughputResult(float(hz), 1, seconds, 1.0, 1.0, 0.0, 0.0)
 
     monkeypatch.setattr(throughput, "run_lift_episode", fake)
-    rates = ["500", "250", "125", "100", "50", "25", "20", "10"]  # MAX_RATES = 8
+    rates = ["500", "250", "125", "100"] * 2  # MAX_RATES = 8
     argv = ["--hz", *rates, "--repeats", "10", "--seconds", "60"]
     assert throughput.main(argv) == 0
     assert len(calls) == 8 * 10 and all(seconds == 60.0 for _, seconds in calls)
@@ -792,17 +973,24 @@ def test_run_lift_episode_reports_the_simulated_time_and_rejects_bad_input(model
 
 
 @pytest.mark.slow
-def test_reach_sweep_chained_targets_with_random_yaw(model, ids) -> None:
-    """60 chained targets (each starts where the last ended) with yaw in ±π/2."""
-    rng = np.random.default_rng(2024)
+@pytest.mark.parametrize("seed", [2024, 7])
+def test_reach_sweep_chained_targets_with_random_yaw(model, ids, seed: int) -> None:
+    """30 chained targets (each starts where the last ended) with yaw in ±π/2.
+
+    A turn of θ takes θ / max_ang_speed (up to 2.1 s for ≈ π), so each move gets
+    that on top of the 2 s reach. Seed 7 failed a flat 2 s budget (T03 review).
+    """
+    rng = np.random.default_rng(seed)
     data = _fresh(model)
     osc = O.OperationalSpaceController(model, data, ids=ids)
     worst_pos = worst_rot = 0.0
-    for _ in range(60):
+    yaw = 0.0
+    for _ in range(30):
         target = rng.uniform(O.WORKSPACE_LOW, O.WORKSPACE_HIGH)
-        yaw = float(rng.uniform(-math.pi / 2, math.pi / 2))
+        new_yaw = float(rng.uniform(-math.pi / 2, math.pi / 2))
+        turn, yaw = abs(new_yaw - yaw), new_yaw
         osc.set_target(target, yaw=yaw)
-        _run(model, data, [osc], REACH_SECONDS)
+        _run(model, data, [osc], REACH_SECONDS + turn / osc.gains.max_ang_speed)
         pos_err, rot_err = _ee_errors(data, ids, target, O.top_down_rot(yaw))
         worst_pos, worst_rot = max(worst_pos, pos_err), max(worst_rot, rot_err)
     assert worst_pos < POS_TOL_M and worst_rot < ROT_TOL_RAD, (worst_pos, worst_rot)

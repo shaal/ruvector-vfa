@@ -22,14 +22,22 @@ spring-damper attached to a reference pose (ARCHITECTURE §3, D2)::
   until a motor reaches its torque limit (e.g. a 70 N push along +x
   saturates joint 6).
 - ``K`` is the stiffness in physical units (N/m, N·m/rad). Lower ``K`` = softer.
-- ``D`` is the damping. By default ``D_i = 2·ζ·√(K_i·m_i)`` with the apparent
-  mass ``m_i = 1/(J·M⁻¹·Jᵀ)_ii``: the inertia a force along axis ``i`` feels
-  when the other axes are free. Each axis then stays near the damping ratio
-  ``ζ`` in every arm configuration, and ``D_i·dt/m_i = 2ζ·ω_i·dt`` stays small,
-  so the law is stable with torques held for 10 ms (100 Hz). Damping from the
-  diagonal of ``Λ = (J·M⁻¹·Jᵀ)⁻¹`` instead overdamps the extended-arm poses and
-  went unstable at 100–125 Hz (measured in T03). Explicit damping values
-  override the default.
+- ``D`` is the damping, a 6×6 matrix. By default it gives every mode of the
+  ee's mass-spring system ``Λ·ẍ + D·ẋ + K·x = 0`` the damping ratio ``ζ``
+  (``damping_ratio``, default 1 = critical) in every arm configuration, where
+  ``Λ = (J·M⁻¹·Jᵀ)⁻¹`` is the task-space inertia. One 6×6 ``eigh`` per tick,
+  ``K½·Λ⁻¹·K½ = V·Ω²·Vᵀ``, gives the mode frequencies ``Ω`` and
+  ``D = K½·V·(2ζ·Ω⁻¹)·Vᵀ·K½`` (modal "double diagonalization", Albu-Schäffer
+  et al. 2003). At ζ = 1 the ee arrives without overshoot. Heavy modes settle
+  slowly: at the far-high box corner the slowest mode has ω ≈ 2.9 rad/s, so a
+  reach from ``home`` is still ≈ 3 mm / 2.4° off after 2 s. The fastest mode at
+  the default gains has ω ≈ 33 rad/s, so ``2ζω·dt`` ≤ 0.67 with torques held
+  for 10 ms (100 Hz): stable. History (measured in T03): per-axis damping from
+  the apparent mass ``1/(Λ⁻¹)_ii`` underdamped the coupled modes (effective ζ
+  0.41–0.96 per axis) and overshot long moves by up to 13 mm; per-axis damping from the
+  diagonal of ``Λ`` went unstable at 100–125 Hz at the far-high corners.
+  Explicit ``pos_damping`` / ``rot_damping`` replace that block with a diagonal
+  and drop its coupling to the other block.
 - ``qfrc_bias`` cancels gravity and Coriolis/centrifugal forces. The
   menagerie joint damping (1 N·m·s/rad per joint) is not compensated; it only
   adds damping and does not change any static deflection.
@@ -40,17 +48,28 @@ spring-damper attached to a reference pose (ARCHITECTURE §3, D2)::
 
 The default target orientation is top-down: the hand z axis points at the table
 and the fingers close along world x. An optional yaw turns the hand about world
-z. Joint 7's range (±2.8973 rad) bounds the yaw: ``|yaw| <= π/2`` is reachable
-at every corner of the workspace box (measured in T03; a few moves touch the
-joint-7 limit briefly), while yaw = 2.0 rad already stalls at the joint limit
-at some corners, at some with joint-7 torque saturation and at some silently.
-The parallel gripper is symmetric under a half turn, so
-``wrap_grasp_yaw`` maps any grasp yaw into [−π/2, π/2).
+z. Joint 7's range (±2.8973 rad) bounds the yaw, and not symmetrically: at
+yaw +π/2 joint 7 has only ≈ 0.05 rad left at some box corners, at −π/2 it has
+≈ 1.6 rad. ``set_target`` accepts ``|yaw| <= π/2 + GRASP_YAW_MARGIN`` (the band
+reached at every box corner in T03 with ≥ 0.013 rad of joint-7 headroom). Yaw
+2.0 rad (via ``rot=``) runs joint 7 into its limit at the four y = −0.3
+corners (up to 16 mm / 13° off after 2 s). ``set_target`` also rejects a yaw more than
+π away from the reference's yaw: the reference turns the shortest way, which
+would then pass yaw ±π and run joint 7 into its limit (a review found this
+after an external twist left the hand at yaw −1.61 and the next target was
++1.56). The parallel gripper is symmetric under a half turn, so
+``wrap_grasp_yaw`` maps a grasp yaw into [−π/2, π/2), or, given ``near``, to
+the equivalent yaw in the band that is closest to it (the smallest turn).
+``at_joint_limit`` reports an arm joint within ``JOINT_LIMIT_MARGIN`` of its
+range, where the torque law can stall without saturating a motor.
 
 Rates (ARCHITECTURE §2): physics runs at ``1 / timestep`` (500 Hz). The torque
 law runs at ``control_hz`` (default ``CONTROL_HZ``) and its torques are held
-across physics substeps. ``control_step`` runs one control tick and rejects a
-controller whose ``control_hz`` does not match the tick rate.
+across physics substeps, at ``MIN_CONTROL_HZ`` (100 Hz) or faster. Slower
+ticks lose the reach accuracy (measured in T03 at the 8 box corners after
+2 s: 3.9 mm and 2.9° at 50 Hz, 82 mm and 50° at 25 Hz), so ``substeps_for``
+rejects them. ``control_step`` runs one control tick and rejects a controller
+whose ``control_hz`` does not match the tick rate.
 """
 
 from __future__ import annotations
@@ -64,13 +83,18 @@ from typing import Protocol
 import mujoco
 import numpy as np
 
-from vfa.sim.scene import HOME_ARM_QPOS, SceneIds, _real, _reals, scene_ids
+from vfa.sim.scene import ARM_JOINTS, HOME_ARM_QPOS, SceneIds, _real, _reals, scene_ids
 
 # The OSC rate chosen in T03 (ARCHITECTURE §2): the physics rate, so one control
 # tick per physics step. It keeps a 10 s lift-length episode at >= 10x real time
 # on one core, with headroom for the per-tick work that later tasks add.
 # Measured with ``python -m vfa.control.throughput``.
 CONTROL_HZ = 500
+
+# Slowest allowed control tick (ARCHITECTURE §2: 100–500 Hz). The reach tests
+# pass at 100 Hz (box corners <= 0.58 mm); at 50 Hz they end 3.9 mm off, at
+# 25 Hz 82 mm (measured in T03).
+MIN_CONTROL_HZ = 100.0
 
 # A control tick may hold its torques for at most this many physics steps.
 MAX_SUBSTEPS = 1000
@@ -81,6 +105,13 @@ MAX_SUBSTEPS = 1000
 TOP_DOWN_ROT = np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]])
 TOP_DOWN_ROT.setflags(write=False)
 
+# |yaw| <= π/2 + GRASP_YAW_MARGIN is reachable at every box corner (T03: joint 7
+# keeps >= 0.013 rad of headroom at +π/2 + 0.05; at +π/2 + 0.1 it hits the limit).
+GRASP_YAW_MARGIN = 0.05
+
+# ``at_joint_limit`` is set when an arm joint is this close [rad] to its range end.
+JOINT_LIMIT_MARGIN = 0.01
+
 # Box (world = robot base frame, metres) where top-down targets are reachable
 # from ``home``: the reach tests sample it. The table top is z = 0; z = 0.02
 # puts the fingertip center 2 cm above it (a 4 cm cube's center).
@@ -89,11 +120,14 @@ WORKSPACE_HIGH = np.array([0.65, 0.30, 0.45])
 WORKSPACE_LOW.setflags(write=False)
 WORKSPACE_HIGH.setflags(write=False)
 
-# Tikhonov term added to Λ⁻¹ = J·M⁻¹·Jᵀ before inverting it. Measured in T03:
-# Λ⁻¹'s smallest eigenvalue is >= 0.010 over the workspace box with |yaw| <=
-# π/2, so 1e-9 changes Λ by < 1e-7 (relative). At an exact singularity (e.g.
-# the arm straight up, q = 0) it keeps Λ finite (<= 1e9).
+# Tikhonov term added to Λ⁻¹ = J·M⁻¹·Jᵀ before Λ and D come from it. Measured
+# in T03: Λ⁻¹'s smallest eigenvalue is >= 0.01 at reach endpoints over the
+# workspace box with |yaw| <= π/2, so 1e-9 changes Λ by < 1e-7 (relative). At
+# an exact singularity (e.g. the arm straight up, q = 0) it keeps Λ finite.
 _LAMBDA_REG = 1e-9 * np.eye(6)
+
+_YAW_LIMIT = 0.5 * math.pi + GRASP_YAW_MARGIN
+_DOWN_COS = math.cos(math.radians(45.0))  # "hand points down": hand z within 45° of −z
 
 
 @dataclass(slots=True, frozen=True)
@@ -103,8 +137,8 @@ class OSCGains:
     Units: ``pos_stiffness`` N/m, ``rot_stiffness`` N·m/rad, ``pos_damping``
     N·s/m, ``rot_damping`` N·m·s/rad, ``null_stiffness`` N·m/rad, ``null_damping``
     N·m·s/rad, ``max_lin_speed`` m/s, ``max_ang_speed`` rad/s. ``pos_damping`` /
-    ``rot_damping`` = ``None`` means "damping from ``damping_ratio`` and the
-    apparent mass" (module docstring). The speed limits bound how fast the
+    ``rot_damping`` = ``None`` means "modal damping with ``damping_ratio``"
+    (module docstring). The speed limits bound how fast the
     reference pose moves toward the target; ``math.inf`` disables them.
     """
 
@@ -176,14 +210,17 @@ class OperationalSpaceController:
         self.ids = ids if ids is not None else scene_ids(model)
         self.posture = np.array(_reals("posture", posture, 7))
         substeps_for(model, control_hz)  # validates the rate
-        self.control_hz = float(control_hz)
-        self._dt = 1.0 / self.control_hz
+        self._control_hz = float(control_hz)
+        self._dt = 1.0 / self._control_hz
         arm = self.ids.arm_dof
         if not np.array_equal(arm, np.arange(arm[0], arm[0] + 7)):
             raise ValueError("the arm dofs must be contiguous")
         self._cols = slice(int(arm[0]), int(arm[0]) + 7)  # arm dofs in qvel / M / J
         self._qpos = self.ids.arm_qpos
         self._tau_max = np.abs(model.actuator_ctrlrange[self.ids.arm_actuators, 1]).copy()
+        ranges = np.array([model.joint(name).range for name in ARM_JOINTS])
+        self._q_low = ranges[:, 0] + JOINT_LIMIT_MARGIN
+        self._q_high = ranges[:, 1] - JOINT_LIMIT_MARGIN
         self._jacp = np.zeros((3, model.nv))
         self._jacr = np.zeros((3, model.nv))
         self._jac = np.zeros((6, 7))
@@ -193,12 +230,24 @@ class OperationalSpaceController:
         self._quat_err = np.zeros(4)
         self._rotvec = np.zeros(3)
         self._quat_target = np.zeros(4)
+        self._mat = np.zeros(9)
         self._ref_pos = np.zeros(3)
         self._ref_quat = np.zeros(4)
         self._ref_vel = np.zeros(6)
         self.saturated = False  # True if the last torque command hit a motor limit
+        self.at_joint_limit = False  # True if an arm joint was at its range end (last compute)
         self.set_gains(gains if gains is not None else OSCGains())
         self.hold_current()
+
+    @property
+    def control_hz(self) -> float:
+        """Tick rate [Hz] the reference step is sized for (fixed at construction)."""
+        return self._control_hz
+
+    @property
+    def gains(self) -> OSCGains:
+        """The active gains (immutable). Change them with ``set_gains``."""
+        return self._gains
 
     # ------------------------------------------------------------------ targets
 
@@ -216,13 +265,23 @@ class OperationalSpaceController:
     ) -> None:
         """Set the ee target: position [m], top-down orientation turned by ``yaw`` [rad].
 
-        ``rot`` (a 3×3 rotation matrix) overrides the top-down orientation and
-        then ``yaw`` must stay 0. ``vel`` is an optional 6-D feed-forward
+        ``yaw`` must be within ±(π/2 + ``GRASP_YAW_MARGIN``) and within π of the
+        reference's yaw (module docstring); use ``wrap_grasp_yaw(yaw,
+        near=self.ee_yaw())`` to pick the equivalent grasp yaw. ``rot`` (a 3×3
+        rotation matrix) overrides the top-down orientation, skips both checks,
+        and then ``yaw`` must stay 0. ``vel`` is an optional 6-D feed-forward
         velocity [m/s, rad/s] for trajectory tracking (default zero). The
         reference pose moves toward the new target from where it is now.
         """
         position = np.array(_reals("pos", pos, 3))
         if rot is None:
+            yaw = _real("yaw", yaw)
+            if abs(yaw) > _YAW_LIMIT:
+                raise ValueError(
+                    f"yaw must be within ±{_YAW_LIMIT:.4f} rad (π/2 + GRASP_YAW_MARGIN), "
+                    f"got {yaw!r}; refer to wrap_grasp_yaw"
+                )
+            self._check_turn(yaw)
             rotation = top_down_rot(yaw)
         else:
             if _real("yaw", yaw) != 0.0:
@@ -231,8 +290,34 @@ class OperationalSpaceController:
         velocity = np.zeros(6) if vel is None else np.array(_reals("vel", vel, 6))
         self._set_target(position, rotation, velocity)
 
+    def _check_turn(self, yaw: float) -> None:
+        """Reject a yaw target the reference would reach by turning through yaw ±π."""
+        ref = self._mat
+        mujoco.mju_quat2Mat(ref, self._ref_quat)
+        if ref[8] > -_DOWN_COS:  # the reference hand does not point down: no yaw to compare
+            return
+        ref_yaw = math.atan2(ref[4], ref[1])  # the ee y axis (column 1) in the world xy plane
+        if abs(yaw - ref_yaw) > math.pi:
+            raise ValueError(
+                f"yaw {yaw:.4f} rad is {abs(yaw - ref_yaw):.4f} rad from the reference yaw "
+                f"{ref_yaw:.4f}: the shortest turn passes yaw ±π, past joint 7's range. Use "
+                "wrap_grasp_yaw(yaw, near=controller.ee_yaw()) or turn in two steps"
+            )
+
+    def ee_yaw(self) -> float:
+        """Yaw [rad] of the ee about world z, as in ``top_down_rot(yaw)``.
+
+        Meaningful while the hand points down. Reads ``data``'s kinematics
+        (after ``control_step``, run ``mj_forward`` first).
+        """
+        rot = self.data.site_xmat[self.ids.ee_site]
+        return math.atan2(float(rot[4]), float(rot[1]))
+
     def hold_current(self) -> None:
-        """Make the current ee pose the target and the reference, at rest."""
+        """Make the ee pose in ``data`` the target and the reference, at rest.
+
+        After ``control_step``, run ``mj_forward`` first (refer to ``control_step``).
+        """
         site = self.ids.ee_site
         rotation = self.data.site_xmat[site].reshape(3, 3).copy()
         if not rotation.any():
@@ -258,17 +343,17 @@ class OperationalSpaceController:
         """Swap the gains (e.g. a softer stiffness while in contact)."""
         if not isinstance(gains, OSCGains):
             raise TypeError(f"gains must be OSCGains, got {type(gains).__name__}")
-        self.gains = gains
+        self._gains = gains
         self._stiffness = np.array((*gains.pos_stiffness, *gains.rot_stiffness))
-        # D = 2ζ·√(K·m) = damp_scale·√m, unless a block has explicit damping.
-        self._damp_scale = 2.0 * gains.damping_ratio * np.sqrt(self._stiffness)
+        self._sqrt_stiffness = np.sqrt(self._stiffness)
+        self._two_zeta = 2.0 * gains.damping_ratio
         fixed = np.full(6, np.nan)
         if gains.pos_damping is not None:
             fixed[:3] = gains.pos_damping
         if gains.rot_damping is not None:
             fixed[3:] = gains.rot_damping
-        self._fixed = ~np.isnan(fixed)
-        self._fixed_damping = np.nan_to_num(fixed)
+        self._fixed = np.flatnonzero(~np.isnan(fixed))  # axes with explicit damping
+        self._fixed_damping = np.nan_to_num(fixed)[self._fixed]
 
     def _set_target(self, pos: np.ndarray, rot: np.ndarray, vel: np.ndarray) -> None:
         for array in (pos, rot, vel):
@@ -284,7 +369,10 @@ class OperationalSpaceController:
         return err[:3].copy(), err[3:].copy()
 
     def errors(self) -> tuple[float, float]:
-        """(position error norm [m], orientation error angle [rad]) to the target."""
+        """(position error norm [m], orientation error angle [rad]) to the target.
+
+        Reads ``data``'s kinematics: after ``control_step``, run ``mj_forward`` first.
+        """
         err = self._error_to(self._target.pos, self._quat_target)
         return float(np.linalg.norm(err[:3])), float(np.linalg.norm(err[3:]))
 
@@ -338,16 +426,15 @@ class OperationalSpaceController:
         jac[:3] = self._jacp[:, cols]
         jac[3:] = self._jacr[:, cols]
         mujoco.mj_fullM(model, data, self._mass)
-        jm = jac @ np.linalg.inv(self._mass[cols, cols])  # J·M⁻¹
-        lam_inv = jm @ jac.T + _LAMBDA_REG
-        lam = np.linalg.inv(lam_inv)  # task-space inertia Λ, kept finite at a singularity
-
-        # D_i = 2ζ·√(K_i·m_i) with the apparent mass m_i = 1/(Λ⁻¹)_ii.
-        damping = self._damp_scale / np.sqrt(np.diagonal(lam_inv))
-        damping[self._fixed] = self._fixed_damping[self._fixed]
+        try:
+            jm = jac @ np.linalg.inv(self._mass[cols, cols])  # J·M⁻¹
+            lam_inv = jm @ jac.T + _LAMBDA_REG
+            lam, damping = self._inertia_and_damping(lam_inv)
+        except np.linalg.LinAlgError as exc:  # e.g. a non-finite qpos
+            raise FloatingPointError(f"non-finite arm dynamics ({exc}); check the state") from exc
         qvel = data.qvel[cols]
         error = self._error_to(self._ref_pos, self._ref_quat)
-        wrench = self._stiffness * error + damping * (self._ref_vel - jac @ qvel)
+        wrench = self._stiffness * error + damping @ (self._ref_vel - jac @ qvel)
 
         # Nᵀ·τ_p = τ_p − Jᵀ·Λ·J·M⁻¹·τ_p (dynamically consistent null space).
         posture = g.null_stiffness * (self.posture - data.qpos[self._qpos])
@@ -356,7 +443,30 @@ class OperationalSpaceController:
         if not np.all(np.isfinite(tau)):
             raise FloatingPointError(f"non-finite arm torque {tau}; check gains, target, state")
         self.saturated = bool(np.any(np.abs(tau) > self._tau_max))
+        q = data.qpos[self._qpos]
+        self.at_joint_limit = bool(np.any((q < self._q_low) | (q > self._q_high)))
         return np.minimum(np.maximum(tau, -self._tau_max), self._tau_max)
+
+    def _inertia_and_damping(self, lam_inv: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Task-space inertia Λ and the 6×6 damping D (ratio ζ in every mode of
+        Λ·ẍ + D·ẋ + K·x = 0; explicit blocks override), from one ``eigh``."""
+        # K½·Λ⁻¹·K½ = V·Ω²·Vᵀ, so Λ = K½·V·Ω⁻²·Vᵀ·K½. The mode shapes Φ = K⁻½·V·Ω
+        # satisfy ΦᵀΛΦ = I and ΦᵀKΦ = Ω², so D = Φ⁻ᵀ·(2ζΩ)·Φ⁻¹ = K½·V·(2ζ/Ω)·Vᵀ·K½.
+        root = self._sqrt_stiffness
+        omega_sq, modes = np.linalg.eigh(lam_inv * root * root[:, None])
+        # Λ⁻¹ carries the 1e-9 Tikhonov term, so Ω² > 0 up to rounding; floor it.
+        omega_sq = np.maximum(omega_sq, 1e-12 * omega_sq[-1])
+        shapes = modes * root[:, None]
+        lam = (shapes / omega_sq) @ shapes.T  # kept finite at a singularity by the Tikhonov term
+        fixed = self._fixed
+        if fixed.size == 6:
+            return lam, np.diag(self._fixed_damping)
+        damping = (shapes * (self._two_zeta / np.sqrt(omega_sq))) @ shapes.T
+        if fixed.size:
+            damping[fixed, :] = 0.0
+            damping[:, fixed] = 0.0
+            damping[fixed, fixed] = self._fixed_damping
+        return lam, damping
 
     def apply(self) -> np.ndarray:
         """One control tick: advance the reference, compute, write the arm motors. Returns τ.
@@ -386,9 +496,15 @@ class Actuated(Protocol):
 def substeps_for(model: mujoco.MjModel, control_hz: float) -> int:
     """Physics steps per control tick (1..``MAX_SUBSTEPS``).
 
-    ``1/timestep`` must be a whole multiple of ``control_hz``.
+    ``control_hz`` must be at least ``MIN_CONTROL_HZ``, and ``1/timestep`` must
+    be a whole multiple of it.
     """
     hz = _pos("control_hz", control_hz)
+    if hz < MIN_CONTROL_HZ:
+        raise ValueError(
+            f"control_hz={control_hz!r} is below the {MIN_CONTROL_HZ:g} Hz floor "
+            "(slower ticks lose the reach accuracy; refer to the osc module docstring)"
+        )
     dt = float(model.opt.timestep)
     if hz * dt * MAX_SUBSTEPS < 1.0:
         raise ValueError(f"control_hz={control_hz!r} needs more than {MAX_SUBSTEPS} substeps")
@@ -413,8 +529,18 @@ def control_step(
     ``mj_step1`` computes kinematics, the mass matrix, and ``qfrc_bias`` at the
     current state, so the torques match the state they act on. The commands are
     then held for all ``substeps`` physics steps. A controller with a
-    ``control_hz`` attribute must match the tick rate ``1/(substeps·timestep)``.
+    ``control_hz`` attribute must match the tick rate ``1/(substeps·timestep)``,
+    and each controller may appear once. If an ``apply()`` raises, the tick
+    stops before any physics step; controllers applied earlier in the tick have
+    already advanced (an ``OperationalSpaceController`` rolls back only its own
+    failed tick). Afterwards ``data``'s kinematics (``site_xpos``, ...) still
+    describe the state before the last physics step (≈ 1 mm behind at
+    0.5 m/s). Run ``mj_forward`` before reading poses (``errors``,
+    ``pose_error``, ``ee_yaw``, ``hold_current``, the scene readers).
     """
+    controllers = tuple(controllers)  # a one-shot iterator would be used up below
+    if len({id(controller) for controller in controllers}) != len(controllers):
+        raise ValueError("a controller appears twice in one tick; it would advance twice")
     if (
         not isinstance(substeps, numbers.Integral)
         or isinstance(substeps, bool | np.bool_)
@@ -447,12 +573,22 @@ def top_down_rot(yaw: float = 0.0) -> np.ndarray:
     return rz @ TOP_DOWN_ROT
 
 
-def wrap_grasp_yaw(yaw: float) -> float:
-    """The equivalent grasp yaw in [−π/2, π/2): a parallel grasp is the same after a half turn."""
+def wrap_grasp_yaw(yaw: float, near: float | None = None) -> float:
+    """The equivalent grasp yaw to command: a parallel grasp is the same after a half turn.
+
+    Without ``near``: the equivalent yaw in [−π/2, π/2). With ``near`` (e.g.
+    ``controller.ee_yaw()``): of the equivalent yaws within ±(π/2 +
+    ``GRASP_YAW_MARGIN``), the one closest to ``near``, so the hand turns the least.
+    """
     yaw = _real("yaw", yaw)
     wrapped = (yaw + 0.5 * math.pi) % math.pi - 0.5 * math.pi
     # Float rounding can land exactly on the open end (+π/2); fold it back.
-    return wrapped - math.pi if wrapped >= 0.5 * math.pi else wrapped
+    wrapped = wrapped - math.pi if wrapped >= 0.5 * math.pi else wrapped
+    if near is None:
+        return wrapped
+    near = _real("near", near)
+    candidates = [c for c in (wrapped - math.pi, wrapped + math.pi) if abs(c) <= _YAW_LIMIT]
+    return min([wrapped, *candidates], key=lambda c: abs(c - near))
 
 
 def rotation_angle(a: np.ndarray, b: np.ndarray) -> float:

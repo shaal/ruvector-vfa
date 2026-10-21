@@ -280,10 +280,26 @@ def test_apply_raises_on_a_non_finite_finger_state() -> None:
     gripper = Gripper(model, data, ids)
     data.qvel[model.jnt_dofadr[model.joint(S.FINGER_JOINTS[0]).id]] = math.nan
     mujoco.mj_forward(model, data)
-    ctrl = float(data.ctrl[ids.gripper_actuator])
+    ctrl, command = float(data.ctrl[ids.gripper_actuator]), gripper.command
     with pytest.raises(FloatingPointError):
         gripper.apply()
     assert data.ctrl[ids.gripper_actuator] == ctrl
+    # A command that cannot be applied does not become the active command.
+    for call, arg in ((gripper.squeeze, 1.0), (gripper.close, 0.02)):
+        with pytest.raises(FloatingPointError):
+            call(arg)
+        assert gripper.command is command
+        assert data.ctrl[ids.gripper_actuator] == ctrl
+
+
+def test_command_is_read_only() -> None:
+    model = S.build_scene()
+    data = mujoco.MjData(model)
+    S.reset_to_home(model, data)
+    gripper = Gripper(model, data)
+    with pytest.raises(AttributeError):
+        gripper.command = GripperCommand("force", -50.0)  # type: ignore[misc]
+    assert gripper.command == GripperCommand("position", 0.08)
 
 
 def test_gripper_reads_a_custom_servo_and_an_unlimited_motor() -> None:
