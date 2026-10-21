@@ -86,8 +86,8 @@ def test_reach_every_workspace_corner(model, ids, corner: int, hz: int) -> None:
     """The box corners are the hardest targets (longest moves, most extended poses).
 
     At 100 Hz each torque is held for 5 physics steps (10 ms): the far-high
-    corners went unstable there with damping from diag(Λ); the apparent-mass
-    damping keeps them stable.
+    corners went unstable there with damping from diag(Λ); the modal damping
+    keeps them stable.
     """
     pick = [(corner >> axis) & 1 for axis in range(3)]
     target = np.where(pick, O.WORKSPACE_HIGH, O.WORKSPACE_LOW)
@@ -171,6 +171,27 @@ def test_wrap_grasp_yaw_near_picks_the_closest_equivalent_in_the_band() -> None:
         assert turns == pytest.approx(round(turns), abs=1e-9)
     with pytest.raises(ValueError):
         O.wrap_grasp_yaw(0.0, near=math.nan)
+
+
+def test_turn_check_skips_a_reference_that_does_not_point_down(model, ids) -> None:
+    """A sideways reference has no top-down yaw, so set_target cannot compare against it.
+
+    The reference below keeps the ee y axis of yaw −1.6 but tips the hand z axis
+    horizontal; read as a yaw it would be 3.2 rad from +1.6 and wrongly rejected.
+    """
+    data = _fresh(model)
+    gains = O.OSCGains(max_ang_speed=math.inf)
+    osc = O.OperationalSpaceController(model, data, gains, ids=ids)
+    tip = np.array([[0.0, 0.0, 1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]])  # 90° about ee y
+    sideways = O.top_down_rot(-1.6) @ tip
+    osc.set_target((0.5, 0.0, 0.3), rot=sideways)
+    osc.advance_reference()
+    assert O.rotation_angle(osc.reference().rot, sideways) < 1e-9
+    osc.set_target((0.5, 0.0, 0.3), yaw=1.6)  # accepted: no yaw to compare with
+    osc.set_target((0.5, 0.0, 0.3), rot=O.top_down_rot(-1.6))
+    osc.advance_reference()  # pointing down again: the check applies
+    with pytest.raises(ValueError, match="±π"):
+        osc.set_target((0.5, 0.0, 0.3), yaw=1.6)
 
 
 def test_at_joint_limit_flags_a_stall_the_torque_limits_miss(model, ids) -> None:
@@ -371,6 +392,8 @@ def _reference_tau(model, data, ids, osc: O.OperationalSpaceController) -> np.nd
         O.OSCGains(),
         O.OSCGains(pos_stiffness=(800.0, 1200.0, 400.0), rot_stiffness=30.0, damping_ratio=0.7),
         O.OSCGains(pos_damping=40.0, rot_damping=(2.0, 3.0, 4.0), null_stiffness=0.0),
+        O.OSCGains(pos_damping=(30.0, 40.0, 50.0), damping_ratio=0.8),  # rot block stays modal
+        O.OSCGains(rot_damping=3.0),  # pos block stays modal
     ],
 )
 @pytest.mark.parametrize("unlimited", [True, False], ids=["ref=target", "ref=rate-limited"])
@@ -457,7 +480,8 @@ def test_singular_start_pose_keeps_torques_finite_and_bounded(model, ids) -> Non
 
     From near-singular poses the controller can stall (documented in
     ARCHITECTURE §3); it must never produce NaN or out-of-limit torques.
-    Without the Tikhonov term, inverting Λ⁻¹ fails here.
+    The Tikhonov term on Λ⁻¹ and the ω² floor in the modal step each keep Λ
+    and D finite here (belt and braces; the floor alone is tested below).
     """
     data = _fresh(model)
     data.qpos[ids.arm_qpos] = 0.0
@@ -474,6 +498,23 @@ def test_singular_start_pose_keeps_torques_finite_and_bounded(model, ids) -> Non
         tau = data.ctrl[ids.arm_actuators]
         assert np.all(np.isfinite(tau)) and np.all(np.abs(tau) <= limits + 1e-12)
     assert np.all(np.isfinite(data.qpos)) and np.all(np.isfinite(data.qvel))
+
+
+def test_modal_step_stays_finite_on_a_singular_inverse_inertia(model, ids) -> None:
+    """The ω² floor alone keeps Λ and D finite when Λ⁻¹ (no Tikhonov term) is singular."""
+    data = _fresh(model)
+    data.qpos[ids.arm_qpos] = 0.0
+    mujoco.mj_forward(model, data)
+    osc = O.OperationalSpaceController(model, data, ids=ids)
+    jacp, jacr = np.zeros((3, model.nv)), np.zeros((3, model.nv))
+    mujoco.mj_jacSite(model, data, jacp, jacr, ids.ee_site)
+    jac = np.vstack((jacp[:, ids.arm_dof], jacr[:, ids.arm_dof]))
+    full = np.zeros((model.nv, model.nv))
+    mujoco.mj_fullM(model, data, full)
+    lam_inv = jac @ np.linalg.inv(full[np.ix_(ids.arm_dof, ids.arm_dof)]) @ jac.T
+    assert np.linalg.eigvalsh(lam_inv)[0] < 1e-12, "q = 0 must make Λ⁻¹ singular"
+    lam, damping = osc._inertia_and_damping(lam_inv)
+    assert np.all(np.isfinite(lam)) and np.all(np.isfinite(damping))
 
 
 @pytest.mark.filterwarnings("ignore:overflow encountered:RuntimeWarning")
@@ -585,6 +626,11 @@ def test_reference_follows_a_slow_target_exactly_with_its_velocity(model, ids) -
     osc.set_target(osc.target.pos, vel=(3.0, 4.0, 0.0, 0.0, 0.0, 6.0))
     osc.advance_reference()
     np.testing.assert_allclose(osc.reference().vel, (0.3, 0.4, 0.0, 0.0, 0.0, 1.5))
+    # hold_current stops the feed-forward too: target and reference at rest.
+    mujoco.mj_forward(model, data)
+    osc.hold_current()
+    np.testing.assert_array_equal(osc.reference().vel, np.zeros(6))
+    np.testing.assert_array_equal(osc.target.vel, np.zeros(6))
 
 
 def test_feedforward_velocity_reduces_tracking_lag(model, ids) -> None:
@@ -608,6 +654,32 @@ def test_feedforward_velocity_reduces_tracking_lag(model, ids) -> None:
 
     with_ff, without_ff = lag(True), lag(False)
     assert with_ff < 0.5 * without_ff, (with_ff, without_ff)
+
+
+def test_feedforward_path_faster_than_the_limit_has_no_torque_step(model, ids) -> None:
+    """Regression (T03 review): v_ref was 0 while the reference chased and the target's
+    velocity once it caught up. A 0.3 m minimum-jerk path in 1.0 s (peak 0.5625 m/s,
+    over the 0.5 m/s limit) then stepped a joint torque by ≈ 40 N·m in one tick."""
+    for hz, bound in ((O.CONTROL_HZ, 1.0), (100, 3.0)):  # measured after the fix: 0.26, 0.99
+        data = _fresh(model)
+        osc = O.OperationalSpaceController(model, data, ids=ids, control_hz=hz)
+        start = data.site_xpos[ids.ee_site].copy()
+        delta = np.array([0.0, 0.3, -0.1]) * (0.3 / math.hypot(0.3, 0.1))
+        substeps, duration = O.substeps_for(model, hz), 1.0
+        previous, worst = None, 0.0
+        for k in range(round((duration + 1.0) * hz)):
+            s = min(1.0, k / hz / duration)
+            blend = s**3 * (10.0 - 15.0 * s + 6.0 * s * s)
+            speed = 30.0 * s * s * (1.0 - s) ** 2 / duration
+            osc.set_target(start + blend * delta, vel=(*(speed * delta), 0.0, 0.0, 0.0))
+            O.control_step(model, data, [osc], substeps)
+            tau = data.ctrl[ids.arm_actuators].copy()
+            if previous is not None:
+                worst = max(worst, float(np.abs(tau - previous).max()))
+            previous = tau
+        assert worst < bound, (hz, worst)
+        mujoco.mj_forward(model, data)
+        assert np.linalg.norm(data.site_xpos[ids.ee_site] - (start + delta)) < 1e-3
 
 
 def test_pose_error_is_world_axis_angle_with_shortest_arc(model, ids) -> None:
@@ -667,7 +739,7 @@ def test_substeps_for_the_physics_rate(model) -> None:
     for bad in (300, 499, 1000, 0, -100, math.nan, math.inf, True, "500", 5e-324, 1e-10, 0.4):
         with pytest.raises(ValueError):
             O.substeps_for(model, bad)
-    # Below the floor (ARCHITECTURE §2): rates that divide 500 Hz but lose the reach.
+    # Below the floor (ARCHITECTURE §2): rates that divide 500 Hz but lose the stability margin.
     for slow in (50, 25, 10, 0.5, O.MIN_CONTROL_HZ - 1e-9):
         with pytest.raises(ValueError, match="floor"):
             O.substeps_for(model, slow)
@@ -720,6 +792,114 @@ def test_control_step_accepts_a_one_shot_iterable_and_rejects_duplicates(model, 
         O.control_step(model, data, [osc, osc], 1)  # would advance the reference twice
     assert data.time == t0
     np.testing.assert_array_equal(osc.reference().pos, ref.pos)
+
+
+def test_control_step_rejects_controllers_that_share_an_actuator(model, ids) -> None:
+    """Two controllers writing the same motors: the last one would silently win."""
+    data = _fresh(model)
+    first, second = (O.OperationalSpaceController(model, data, ids=ids) for _ in range(2))
+    grippers = (Gripper(model, data, ids), Gripper(model, data, ids))
+    t0 = data.time
+    for pair in ((first, second), grippers, (first, grippers[0], second)):
+        with pytest.raises(ValueError, match="another controller"):
+            O.control_step(model, data, pair, 1)
+        assert data.time == t0
+    O.control_step(model, data, (first, grippers[0]), 1)  # disjoint actuators are fine
+    assert set(first.actuators) == set(ids.arm_actuators.tolist())
+    assert grippers[0].actuators == (ids.gripper_actuator,)
+
+    class Odd:
+        def __init__(self, actuators: object) -> None:
+            self.actuators = actuators
+
+        def apply(self) -> None: ...
+
+    for bad in (None, 7, [7], (a for a in (7,)), ("actuator8",), (np.int64(7),), (True,)):
+        with pytest.raises(TypeError, match="tuple of int"):
+            O.control_step(model, data, (first, Odd(bad)), 1)
+
+
+def test_control_step_raises_when_mujoco_resets_a_diverged_state(model, ids) -> None:
+    """Regression (T03 review): mj_step1 silently reset a NaN qpos to qpos0 (time 0, the
+    singular q = 0 pose), and the controller carried on from there without an error."""
+    data = _fresh(model)
+    osc = O.OperationalSpaceController(model, data, ids=ids)
+    _run(model, data, [osc], 0.1)
+    ref = osc.reference()
+    data.qpos[ids.arm_qpos[1]] = math.nan
+    with pytest.raises(FloatingPointError, match="before the controllers ran"):
+        O.control_step(model, data, [osc], 1)
+    np.testing.assert_array_equal(osc.reference().pos, ref.pos)  # no controller advanced
+    # A huge external force diverges qacc inside the physics step instead.
+    data = _fresh(model)
+    osc = O.OperationalSpaceController(model, data, ids=ids, control_hz=100)
+    data.xfrc_applied[ids.hand_body, :3] = (0.0, 0.0, 1e15)
+    with pytest.raises(FloatingPointError, match="during the physics steps"):
+        O.control_step(model, data, [osc], 5)
+    data.xfrc_applied[:] = 0.0
+    # A healthy tick after a fresh reset raises nothing.
+    S.reset_to_home(model, data)
+    osc.hold_current()
+    O.control_step(model, data, [osc], 5)
+
+
+def test_control_step_catches_every_divergence_not_only_the_first(model, ids) -> None:
+    """Regression (T03 review): MuJoCo's reset leaves the counter that fired at 1, so a
+    before/after count missed a second divergence on the same data, and recovering by
+    restoring the state (no mj_resetData) then carried on silently from qpos0."""
+    data = _fresh(model)
+    osc = O.OperationalSpaceController(model, data, ids=ids)
+    _run(model, data, [osc], 0.1)
+    qpos, qvel = data.qpos.copy(), data.qvel.copy()
+    for round_ in range(3):
+        data.qpos[:], data.qvel[:] = qpos, qvel  # restore by hand, no mj_resetData
+        mujoco.mj_forward(model, data)
+        osc.hold_current()
+        O.control_step(model, data, [osc], 1)  # a healthy tick: no stale counter trips it
+        data.qpos[ids.arm_qpos[round_]] = math.nan
+        with pytest.raises(FloatingPointError, match="qpos"):
+            O.control_step(model, data, [osc], 1)
+
+
+def test_control_step_reports_divergences_outside_it_and_in_the_last_integration(
+    model, ids
+) -> None:
+    """A raw mj_step that diverged is reported at the next tick's entry, not erased; and
+    a state that only the last integration made bad is caught before the tick returns."""
+    data = _fresh(model)
+    osc = O.OperationalSpaceController(model, data, ids=ids)
+    data.qpos[ids.arm_qpos[0]] = math.nan
+    mujoco.mj_step(model, data)  # outside control_step: MuJoCo resets and counts it
+    with pytest.raises(FloatingPointError, match="outside control_step"):
+        O.control_step(model, data, [osc], 1)
+    S.reset_to_home(model, data)
+    osc.hold_current()
+    O.control_step(model, data, [osc], 1)  # the raise zeroed the counters: a clean restart
+    # MuJoCo checks qvel before it integrates: 9.995e9 m/s passes, 1.0005e10 after does not.
+    # The cube floats 1 m up, clear of the table, so no contact force trips the qacc check.
+    data.qpos[ids.cube_qpos + 2] = 1.0
+    mujoco.mj_forward(model, data)
+    cube_dof = int(model.jnt_dofadr[model.joint(S.CUBE_JOINT).id])
+    data.qvel[cube_dof] = 9.995e9
+    data.xfrc_applied[ids.cube_body, 0] = 5e9 * float(model.body_mass[ids.cube_body])
+    with pytest.raises(FloatingPointError, match="during the physics steps.*qvel"):
+        O.control_step(model, data, [osc], 1)
+    data.xfrc_applied[:] = 0.0
+
+
+def test_control_step_raises_on_a_bad_ctrl_from_another_controller(model, ids) -> None:
+    """MuJoCo zeroes every ctrl for a step with a NaN ctrl: the arm motors would go limp."""
+    data = _fresh(model)
+    osc = O.OperationalSpaceController(model, data, ids=ids)
+
+    class Broken:
+        actuators = (ids.gripper_actuator,)
+
+        def apply(self) -> None:
+            data.ctrl[ids.gripper_actuator] = math.nan
+
+    with pytest.raises(FloatingPointError, match="ctrl"):
+        O.control_step(model, data, [osc, Broken()], 1)
 
 
 def test_rate_and_gains_are_read_only(model, ids) -> None:

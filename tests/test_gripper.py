@@ -341,3 +341,28 @@ def test_max_squeeze_force_clamps_a_slightly_out_of_range_current_width() -> Non
     assert gripper.max_squeeze_force() == 0.0
     data.qpos[ids.finger_qpos] = 0.04 + 1e-6
     assert gripper.max_squeeze_force() == pytest.approx(25.0 * 0.08)
+
+
+def test_gripper_follows_the_model_tendon_coupling() -> None:
+    """Regression (T03 review): the width and cap math hard-coded the coupling c = 0.5.
+    With c = 1, close(0.04) settled at 0.020 m and max_squeeze_force(0.05) said 2.5 N."""
+    model = S.build_scene()
+    ids = S.scene_ids(model)
+    tendon = int(model.actuator_trnid[ids.gripper_actuator, 0])
+    adr = int(model.tendon_adr[tendon])
+    model.wrap_prm[adr : adr + 2] = 1.0  # L = q1 + q2 = w
+    data = mujoco.MjData(model)
+    S.reset_to_home(model, data)
+    S.place_cube(model, data, 0.2, 0.6)
+    osc = O.OperationalSpaceController(model, data, ids=ids)
+    gripper = Gripper(model, data, ids)
+    gripper.close(0.03)
+    _settle(model, data, osc, gripper, 1.0)
+    assert gripper.width() == pytest.approx(0.03, abs=1e-3)
+    assert gripper.max_squeeze_force(0.05) == pytest.approx(5.0)  # c·kp·(c·w) = 100·w
+    ids, data, osc, gripper = _floating_cube(model)
+    gripper.squeeze(2.0)  # above the c = 0.5 cap (1.25 N), below this one (5 N)
+    _settle(model, data, osc, gripper)
+    for f in S.finger_cube_forces(model, data, ids):
+        assert f == pytest.approx(2.0, rel=1e-3)
+    assert not gripper.saturated

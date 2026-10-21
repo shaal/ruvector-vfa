@@ -19,3 +19,6 @@ target/
 .DS_Store
 .idea/
 .vscode/
+
+# MuJoCo instability warnings (written when a probe drives the sim to NaN)
+MUJOCO_LOG.TXT

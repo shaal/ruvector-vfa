@@ -1,9 +1,10 @@
 """Parallel-jaw gripper interface: ``open``, ``close(width)``, ``squeeze(force_n)``, ``width``.
 
 The gripper is the menagerie tendon actuator ``actuator8`` (T02). It drives the
-``split`` tendon, ``L = 0.5·q1 + 0.5·q2``, where ``q1``, ``q2`` are the two
-finger slides (0..0.04 m each). The opening between the fingers is the width
-``w = q1 + q2 = 2·L`` (0..0.08 m). MuJoCo computes the tendon force as::
+``split`` tendon, ``L = c·q1 + c·q2`` with the coupling ``c = 0.5``, where
+``q1``, ``q2`` are the two finger slides (0..0.04 m each). The opening between
+the fingers is the width ``w = q1 + q2 = L/c = 2·L`` (0..0.08 m). The class
+reads ``c`` from the model. MuJoCo computes the tendon force as::
 
     F = g·ctrl + b0 + b1·L + b2·L̇          (gain g, affine bias b; clipped to forcerange)
 
@@ -15,19 +16,22 @@ requires ``gear = 1`` (MuJoCo's bias then acts on ``L`` itself).
 Both commands pick a desired tendon force ``F*`` and solve the line above for
 ``ctrl`` at the current ``L``, ``L̇`` (re-solved every control tick by ``apply``):
 
-- **Position** (``open``, ``close(width)``): ``F* = kp·(w*/2 − L) − kd·L̇`` with
+- **Position** (``open``, ``close(width)``): ``F* = kp·(c·w* − L) − kd·L̇`` with
   the servo's own ``kp = −b1``, ``kd = −b2``. For the menagerie servo this gives
   the native command ``ctrl = 255·L*/0.04``. Closed on an object of width
   ``w_obj``, the squeeze per finger is ``0.5·kp·(w_obj − w*)/2 = 25·(w_obj − w*)`` N.
-- **Force** (``squeeze(f)``): ``F* = −f / coef − kd·L̇`` = ``−2f − 10·L̇``,
+- **Force** (``squeeze(f)``): ``F* = −f / c − kd·L̇`` = ``−2f − 10·L̇``,
   so at rest each finger presses with ``f`` N, the squeeze (grip) force in a
   face-on two-finger grasp. ``f`` is per finger: the normal force each pad
   applies, which is the ``F_min ≈ m(g + a)/(2μ)`` of ARCHITECTURE §4.
   The servo damping stays while the fingers close, but nothing limits the
-  closing speed: squeezing from wide open overshoots on impact. Measured on a
-  floating 5 cm cube at 500 Hz: peak ≈ 2.07× the request (servo, 0.5 and
-  1 N), ≈ 1.8× (force motor, 10 N), settling to the request. A gentle grasp
-  (T05, T08) closes to contact by position first, then squeezes.
+  closing speed: squeezing from wide open overshoots on impact, then settles
+  on the request. Measured on a floating cube at 500 Hz: servo 1.96–2.07×
+  (3 cm at 0.5 N, 5 and 7 cm at 1 N); force motor 1.6–2.0× (5 cm at 6–20 N,
+  3 cm at 6–10 N), but at 15–20 N on a 3 cm cube the fingers punch through the
+  soft contact (peak ≈ 1330–1380 N). Closing to 4 mm clearance by position
+  first still leaves 1.37–1.71× (2–20 N). T05 owns the closing profile
+  (ARCHITECTURE §3).
 
 Saturation (menagerie servo): the ctrl floor (0) caps the squeeze at
 ``kp·L/2 = 25·w`` N per finger, i.e. **1.25 N on a 5 cm cube**, far below the
@@ -77,6 +81,8 @@ class Gripper:
     ``open``, ``close``, and ``squeeze`` store the command and write ``ctrl`` at
     once. Call ``apply`` every control tick (``control_step`` does) so the
     command tracks the current finger state.
+    The actuator and tendon parameters are read once, at construction: build a
+    new ``Gripper`` after editing them in the model.
     """
 
     def __init__(
@@ -97,6 +103,7 @@ class Gripper:
         if bias_type not in (int(mujoco.mjtBias.mjBIAS_NONE), int(mujoco.mjtBias.mjBIAS_AFFINE)):
             raise ValueError("gripper actuator bias must be none or affine")
         self._act = act
+        self.actuators = (int(act),)  # ctrl ids it writes (control_step checks overlaps)
         self._tendon = int(model.actuator_trnid[act, 0])
         self._gain = float(model.actuator_gainprm[act, 0])
         affine = bias_type == int(mujoco.mjtBias.mjBIAS_AFFINE)
@@ -170,7 +177,7 @@ class Gripper:
         speed = float(self.data.ten_velocity[self._tendon])
         command = self._command
         if command.mode == "position":
-            target_length = 0.5 * command.value
+            target_length = self._coef * command.value  # L = c·w
             force = self.servo_kp * (target_length - length) - self.servo_kd * speed
         else:
             force = -command.value / self._coef - self.servo_kd * speed
@@ -202,7 +209,7 @@ class Gripper:
             w = _real("width", width)
             if not 0.0 <= w <= self.max_width:
                 raise ValueError(f"width must be in [0, {self.max_width}] m, got {width!r}")
-        length = 0.5 * w
+        length = self._coef * w
         b0, b1, _ = self._bias
         # Most negative tendon force: the ctrl bound that minimizes g·ctrl, then forcerange.
         force = self._gain * self._ctrl_lo + b0 + b1 * length
