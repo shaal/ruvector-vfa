@@ -195,7 +195,7 @@ Each group is standardized with statistics fitted on the committed calibration f
 
 ### 5.4 Backend seam
 
-`MemoryBackend` (Protocol): `add`, `search`, `update`, `save`, `load`. `NumpyBackend` is the default (brute force, cosine or Euclidean; fine for thousands of records). `RuVectorBackend` (T22) runs the same calls through the Rust crate via PyO3. A later backend can use `ruvector-core` HNSW for scale without touching cognition code.
+`MemoryBackend` (Protocol): `add`, `search`, `update`, `save`, `load`. `NumpyBackend` is the default (brute force, cosine or Euclidean; fine for thousands of records). `RuVectorBackend` (T22) runs the same calls through the Rust crate via PyO3. Both must return the same top-k, so the backends can differ only in speed; T22 measures insert and search time at 1 000 to 100 000 records. A later backend can use `ruvector-core` HNSW for scale without touching cognition code.
 
 ---
 
@@ -271,6 +271,10 @@ On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so 
 | `memory_ctx_only` | full retrieval policy, but every key uses context features only — **the force ablation** |
 | `memory_full` | full retrieval policy with force features |
 | `memory_full+residual` | plus the learned residual (T21) |
+| `memory_no_reinforce` | `memory_full` with utility fixed at 0.5: ranking by similarity only (T18 component ablation) |
+| `memory_no_semantic` | `memory_full` without consolidation or `SkillLibrary`; episodic hits only (T18) |
+| `memory_no_probe` | `memory_full` without the System 2 decision at `PROBE_DONE` (T18) |
+| `memory_no_failure_bounds` | `memory_full` without the grip and close-speed bounds from failures (T18) |
 
 **Metrics**
 

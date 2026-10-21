@@ -307,16 +307,23 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
 - [ ] **T18 — Full experiments and ablations → docs/RESULTS.md**
   - Goal: honest, reproducible evidence that memory improves movement.
   - Deliverables:
-    - `vfa/experiments/run_all.py`: all conditions (`naive`, `best_fixed`, `random_retry`, `memory_ctx_only`, `memory_full`) × 3 evaluation seeds on the frozen benchmark. Plus a **held-out** run: freeze memory after the warm-up seed, then evaluate on new situations with no further writes.
+    - `vfa/experiments/run_all.py`: all conditions (`naive`, `best_fixed`, `random_retry`, `memory_ctx_only`, `memory_full`, and the four component ablations below) × 3 evaluation seeds on the frozen benchmark. Plus a **held-out** run: freeze memory after the warm-up seed, then evaluate on new situations with no further writes.
+    - **Component ablations** — which RuVector-inspired part helps. Each is one flag on `RetrievalPolicy` / `MemorySystem` (default on) and runs as its own condition:
+      - `memory_no_reinforce` — utility stays 0.5, so ranking is similarity only (ARCHITECTURE §5.3 reinforcement).
+      - `memory_no_semantic` — no consolidation and no `SkillLibrary`; System 2 uses episodic hits only, with `skill_confidence = 0` (§5.2 semantic tier, `SkillLearning`).
+      - `memory_no_probe` — System 2 does not decide at `PROBE_DONE`; it decides only at attempt start and after a failure (§6 dual-process trigger).
+      - `memory_no_failure_bounds` — failures set no grip or close-speed bounds; θ comes from successes only (§7 window narrowing).
     - `docs/RESULTS.md`: a table with mean ± std across seeds, the learning-curve plots, force-profile examples, the force ablation, and a plain-language analysis that includes failure cases.
+    - `docs/RESULTS.md` ablation table: for each component ablation, success@1 over situations 21–60, attempts-to-success, and break rate, each with its difference from `memory_full` (mean ± std over seeds). Add one plain sentence per component: it helps, it hurts, or it has no measurable effect.
   - Acceptance (targets):
     - `memory_full` success@1 over situations 21–60 ≥ `best_fixed` success@1 + 15 percentage points (mean of 3 seeds).
     - `memory_full` mean attempts-to-success < `random_retry`.
     - `memory_full` mean peak-force excess or force jerk is lower than `random_retry` (smoother, gentler force).
     - Report the force ablation (`memory_full` vs `memory_ctx_only`) with its measured gap. It is not a gate.
+    - Report the four component ablations with their measured gaps. They are not a gate: "no measurable effect" is a valid finding, and the analysis must say so plainly.
     - On a miss, follow `CLAUDE.md` → *Missed numeric targets*.
   - Verify: `uv run python -m vfa.experiments.run_all --workers 8`, re-run until it reports every chunk done (each invocation ≤ 9 min, resumable), then `uv run python -m vfa.experiments.run_all aggregate`, then quote the `docs/RESULTS.md` table.
-  - Budget: ~60 min + run time.
+  - Budget: ~80 min + run time.
   - depends: T17
 
 - [ ] **T19 — Pick-and-place extension with force-aware placing**
@@ -368,9 +375,12 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
     - `rust/ruvector_vfa_py/`: a maturin + PyO3 crate. It depends on `ruvector-robotics` by git (`github.com/ruvnet/ruvector`, pinned `rev = "3e8429739fc0a3878b553a87bb91e7f66d8c0cbd"`, the latest upstream commit touching `crates/ruvector-robotics` when this plan was written; confirm it with `git ls-remote` or pick a newer one). Expose `EpisodicMemory` (`store`, `recall_similar`), `SemanticMemory` (`store`, `find_similar`), `SkillLibrary` (`learn_from_demonstration`, `improve_skill`), and `CognitiveCore` (mode/state transitions).
     - `vfa/memory/ruvector_backend.py`: `RuVectorBackend(MemoryBackend)`. Rust `Episode` has no id/success fields: store the retrieval key as the single percept, θ JSON + record id in `actions`, and the signed outcome in `reward`. Keep a Python side table for payloads.
     - Optional extra `ruvector` (`maturin`) and a `--backend ruvector` flag on the benchmark and the demo. Tests skip when the extension is not built.
+    - `vfa/experiments/backend_speed.py` — the speed test, because identical results leave speed as the only possible gain. For `NumpyBackend` and `RuVectorBackend`, on random unit vectors of the real `key_probe` dimension, at 1 000, 10 000, and 100 000 stored records: insert time per record, and `search` top-5 latency (median and p95 over 1 000 queries, one core). Also time `vfa demo --quick` end-to-end with each backend. One command per size (`--size N`), each ≤ 9 min; if a size does not fit, skip it and say so.
+    - A backend table in `docs/RESULTS.md`, with one plain sentence: where, if anywhere, the Rust crate is faster, and the likely reason.
   - Acceptance:
     - Parity test: for the same unit-norm vectors, `RuVectorBackend` and `NumpyBackend` return the same top-k ids in the same order on 1 000 random queries.
     - `vfa demo --quick --backend ruvector` runs end-to-end, and its summary matches the numpy backend for the same seed.
-  - Verify: `uv run maturin develop -m rust/ruvector_vfa_py/Cargo.toml && uv run pytest -q tests/test_ruvector_backend.py && uv run vfa demo --quick --backend ruvector`
-  - Budget: ~60 min.
+    - The backend speed table is in `docs/RESULTS.md` with measured numbers for both backends at every size that fit. It is not a gate: a slower Rust backend (for example, from Python-to-Rust call overhead) is a valid finding.
+  - Verify: `uv run maturin develop -m rust/ruvector_vfa_py/Cargo.toml && uv run pytest -q tests/test_ruvector_backend.py && uv run vfa demo --quick --backend ruvector`, then `uv run python -m vfa.experiments.backend_speed --size 1000` (and 10000, 100000).
+  - Budget: ~80 min.
   - depends: T20
