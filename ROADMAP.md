@@ -3,8 +3,8 @@
 Task list for the unattended `/ship-next` loop. Run it with:
 
 ```bash
-npx @shaal/shipyard --tasks ROADMAP.md     # drain the whole list, one merged PR per task
-npx @shaal/shipyard 1 --tasks ROADMAP.md   # ship exactly one task
+npx --allow-git=all github:shaal/shipyard --tasks ROADMAP.md     # drain the whole list, one merged PR per task
+npx --allow-git=all github:shaal/shipyard 1 --tasks ROADMAP.md   # ship exactly one task
 # or, inside Claude Code: /ship-next ROADMAP.md
 ```
 
@@ -19,7 +19,7 @@ npx @shaal/shipyard 1 --tasks ROADMAP.md   # ship exactly one task
 - Numeric targets: if a target misses after honest work, follow `CLAUDE.md` → *Missed numeric targets*. Never tune the frozen benchmark.
 - Requirements source: `docs/BRIEF.md` (the original brief) and `docs/ARCHITECTURE.md` (design decisions).
 
-Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, baseline) · **C** RuVector-style memory · **D** dual-process cognition · **E** demo, experiments, docs · **F** stretch (residual learning, real RuVector Rust backend).
+Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, baseline) · **C** RuVector-style memory · **D** dual-process cognition · **E** demo, experiments, docs · **F** stretch (residual learning, real RuVector Rust backend) · **G** extension (vision + force on a second benchmark).
 
 ---
 
@@ -304,10 +304,30 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~45 min.
   - depends: T16
 
+- [ ] **T17a — Thompson-sampling bandit: a self-learning baseline ported from `ruvector-domain-expansion`**
+  - Goal: a simpler learner for memory to beat. The bandit also learns from success and failure, but it has no similarity search over force. If memory beats it, the gain comes from the RuVector-style memory, not from learning alone.
+  - Deliverables:
+    - `vfa/experiments/bandit.py`: `ThompsonGripBandit`, a port of `MetaThompsonEngine` and `BetaParams` in `crates/ruvector-domain-expansion/src/transfer.rs` (local clone `~/code/utilities/ruvector`). Its docstring has a `RuVector mapping:` paragraph.
+      - Arms: a fixed grid over `grip_force` × `close_speed` inside the `SkillParams` bounds (default 8 × 3 = 24 arms). The other θ fields keep the `naive` values.
+      - Context buckets: bins of the probe's heft load and closure-force slope (T11 probe features; default 3 × 3 bins). The bin edges are the terciles of the calibration fixture `tests/fixtures/calib_episodes.npz`. No evaluation data is used.
+      - One `Beta(α, β)` per (bucket, arm), prior Beta(1, 1). Select: draw one sample per arm with `rng.beta(α, β)` and take the largest; break ties at random with the same `rng`. Update after every attempt: success → α += 1, failure → β += 1.
+      - **Do not port the Rust sampler.** `BetaParams::sample` uses a normal approximation, with a power-law fallback when α ≤ 1 or β ≤ 1, so it is not a Beta draw. Use numpy's exact Beta and record the deviation in the docstring.
+      - Retries use the same `max_attempts` as every condition. The failed attempt updates its arm before the next draw. Learning carries across situations, so one seed runs sequentially, like memory.
+    - Two benchmark conditions. `bandit`: buckets from the probe (a force-aware learner), deciding at `PROBE_DONE` like System 2. `bandit_flat`: one bucket, an online learner of the single best θ.
+    - `configs/bandit.toml` with the arm grid and bin counts. It is not part of the frozen benchmark hash. Do not change the hashed files.
+    - ARCHITECTURE: add both conditions to §9, a mapping row to §10 (`ThompsonGripBandit` ↔ `MetaThompsonEngine`, `BetaParams`, noting the sampler deviation), and a decision-log row: the bandit shows whether memory's gain comes from RuVector-style retrieval, and the crate's approximate sampler is not a Beta draw.
+  - Acceptance:
+    - Unit tests: the posterior update; the same seed gives the same choices; the mean and variance of 20 000 draws match Beta(α, β) within 2 %; on a synthetic 5-arm Bernoulli problem (p = 0.2 to 0.8), the bandit picks the best arm in ≥ 90 % of the last 200 of 1 000 pulls.
+    - Both conditions finish the `quick` profile (each command ≤ 9 min), and `aggregate` reports success@1, success@k, attempts-to-success, and break rate. Quote the numbers next to `random_retry` in `docs/RESULTS.md`. They are reported, not gated.
+    - The frozen-hash test still passes.
+  - Verify: `uv run pytest -q tests/test_bandit.py tests/test_benchmark_frozen.py`, then `--condition bandit --profile quick` and `--condition bandit_flat --profile quick`, then `aggregate`.
+  - Budget: ~60 min.
+  - depends: T10, T11 (placed here so that T18 runs it)
+
 - [ ] **T18 — Full experiments and ablations → docs/RESULTS.md**
   - Goal: honest, reproducible evidence that memory improves movement.
   - Deliverables:
-    - `vfa/experiments/run_all.py`: all conditions (`naive`, `best_fixed`, `random_retry`, `memory_ctx_only`, `memory_full`, and the four component ablations below) × 3 evaluation seeds on the frozen benchmark. Plus a **held-out** run: freeze memory after the warm-up seed, then evaluate on new situations with no further writes.
+    - `vfa/experiments/run_all.py`: all conditions (`naive`, `best_fixed`, `random_retry`, `memory_ctx_only`, `memory_full`, `bandit`, `bandit_flat`, and the four component ablations below) × 3 evaluation seeds on the frozen benchmark. Plus a **held-out** run: freeze memory after the warm-up seed, then evaluate on new situations with no further writes.
     - **Component ablations** — which RuVector-inspired part helps. Each is one flag on `RetrievalPolicy` / `MemorySystem` (default on) and runs as its own condition:
       - `memory_no_reinforce` — utility stays 0.5, so ranking is similarity only (ARCHITECTURE §5.3 reinforcement).
       - `memory_no_semantic` — no consolidation and no `SkillLibrary`; System 2 uses episodic hits only, with `skill_confidence = 0` (§5.2 semantic tier, `SkillLearning`).
@@ -321,10 +341,11 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
     - `memory_full` mean peak-force excess or force jerk is lower than `random_retry` (smoother, gentler force).
     - Report the force ablation (`memory_full` vs `memory_ctx_only`) with its measured gap. It is not a gate.
     - Report the four component ablations with their measured gaps. They are not a gate: "no measurable effect" is a valid finding, and the analysis must say so plainly.
+    - Report `memory_full` against `bandit` (success@1 over situations 21–60 and attempts-to-success, with the gap) and say in one plain sentence whether memory beats a learner without similarity search. It is not a gate.
     - On a miss, follow `CLAUDE.md` → *Missed numeric targets*.
   - Verify: `uv run python -m vfa.experiments.run_all --workers 8`, re-run until it reports every chunk done (each invocation ≤ 9 min, resumable), then `uv run python -m vfa.experiments.run_all aggregate`, then quote the `docs/RESULTS.md` table.
   - Budget: ~80 min + run time.
-  - depends: T17
+  - depends: T17a
 
 - [ ] **T19 — Pick-and-place extension with force-aware placing**
   - Goal: the third task from the brief, with a contact-rich place phase.
@@ -384,3 +405,39 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Verify: `uv run maturin develop -m rust/ruvector_vfa_py/Cargo.toml && uv run pytest -q tests/test_ruvector_backend.py && uv run vfa demo --quick --backend ruvector`, then `uv run python -m vfa.experiments.backend_speed --size 1000` (and 10000, 100000).
   - Budget: ~80 min.
   - depends: T20
+
+---
+
+## Phase G — Extension: vision + force on a second benchmark
+
+Benchmark v1 (T10) stays frozen and unchanged. Phase G adds a second benchmark in which the camera sees useful but imperfect information. It asks the full Vision-Force-Action question: does force still add value when vision is fairly good?
+
+- [ ] **T23 — Benchmark v2: three shapes and an imperfect visual hint**
+  - Goal: objects a camera can partly read, without any change to benchmark v1.
+  - Deliverables:
+    - Shapes: `cube`, upright `cylinder`, and `flat_box` (a cuboid of about 2:1:1, grasped across its narrow side). The shape is visible and is drawn **independently** of the hidden class, so the shape tells the robot how to grasp, not how hard.
+    - The skill grasps each shape: the grasp yaw comes from the observed pose (any yaw for a cylinder; across the narrow side for a flat box), and the approach and width fit the observed size.
+    - Visual hint: each object shows a color cue. With probability `hint_accuracy` (default 0.7) the cue is the color of its true hidden class; otherwise it is the color of a random other class. The observation returns the shape, size, pose, and cue id. The robot never sees the true class.
+    - `configs/objects_v2.toml` and `configs/benchmark_v2.toml` (the v1 classes, mix, seeds, and retry budget, plus shapes and `hint_accuracy`), `configs/best_fixed_v2.toml` (searched again on the v2 calibration seeds), and `configs/benchmark_v2.sha256` with `tests/test_benchmark_v2_frozen.py`.
+    - Embeddings: shape one-hot and cue one-hot join the context group for v2, with statistics in `configs/embedding_stats_v2.npz`. The v1 embeddings and statistics stay unchanged.
+    - Run the three baselines and `bandit` on v2 and record them in a v2 section of `docs/RESULTS.md`.
+    - ARCHITECTURE: a short "Benchmark v2" subsection in §9 and a decision-log row: v1 isolates force by making vision uninformative; v2 tests what force adds when vision is partly informative, without tuning v1.
+  - Acceptance:
+    - `tests/test_benchmark_frozen.py` (v1) still passes, and the v1 files are byte-identical.
+    - With θ from `docs/FEASIBILITY.md`, the skill lifts `light_rigid` of each shape in ≥ 8 of 10 seeds.
+    - The measured cue accuracy over the v2 evaluation situations is 0.70 ± 0.05.
+  - Verify: `uv run pytest -q tests/test_benchmark_frozen.py tests/test_benchmark_v2_frozen.py`, the shape-grasp sweep with `-m slow`, and the v2 baseline runs (each command ≤ 9 min).
+  - Budget: ~90 min.
+  - depends: T22
+
+- [ ] **T24 — Vision vs force vs both, on benchmark v2**
+  - Goal: answer "does force still help when the camera is fairly good?"
+  - Deliverables:
+    - Conditions on v2: `memory_vision_only` (keys use the context with shape and cue, no force), `memory_force_only` (force, no cue), and `memory_vision_force` (both), plus `best_fixed`, `random_retry`, and `bandit`.
+    - A hint-accuracy sweep: run `memory_vision_only` and `memory_vision_force` at `hint_accuracy` 0.5, 0.7, and 0.9. Only 0.7 is the frozen v2 benchmark; label the other two as sweeps.
+    - The v2 section of `docs/RESULTS.md`: success@1 over situations 21–60, attempts-to-success, and break rate (mean ± std over 3 seeds); a plot of success@1 against hint accuracy for the vision-only and vision+force memories; and plain sentences on where force adds value and where vision alone is enough.
+  - Acceptance:
+    - Every number in the v2 section was measured in this task. There are no targets: this is a question, and either answer is a valid finding.
+  - Verify: `uv run python -m vfa.experiments.run_all --benchmark v2 --workers 8` (re-run until every chunk is done; each command ≤ 9 min), then `aggregate`, then quote the v2 table.
+  - Budget: ~60 min + run time.
+  - depends: T23

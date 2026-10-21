@@ -20,7 +20,7 @@ Inspired by Eka Robotics' Vision-Force-Action idea ("force is the language of ma
 |---|---|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System design, learning-problem design, memory, dual-process loop, RuVector mapping |
 | [`docs/FEASIBILITY.md`](docs/FEASIBILITY.md) | T05 physics spike: grip force × closing speed × hidden class, squeeze calibration, F/T slip detector |
-| [`ROADMAP.md`](ROADMAP.md) | 22 tasks, each one PR, with acceptance criteria and verify commands |
+| [`ROADMAP.md`](ROADMAP.md) | 25 tasks, each one PR, with acceptance criteria and verify commands |
 | [`docs/BRIEF.md`](docs/BRIEF.md) | The original project brief, verbatim |
 | [`CLAUDE.md`](CLAUDE.md) | Rules for the coding agent (environment, probes, frozen benchmark) |
 
@@ -29,9 +29,9 @@ Inspired by Eka Robotics' Vision-Force-Action idea ("force is the language of ma
 [shipyard](https://github.com/shaal/shipyard) loops the `/ship-next` skill: one quality-gated, squash-merged PR per task.
 
 ```bash
-npx @shaal/shipyard init                    # one-time: installs /ship + /ship-next into ~/.claude
-npx @shaal/shipyard 1 --tasks ROADMAP.md    # ship one task
-npx @shaal/shipyard --tasks ROADMAP.md      # drain the whole roadmap
+npx --allow-git=all github:shaal/shipyard init                    # one-time: installs /ship + /ship-next into ~/.claude
+npx --allow-git=all github:shaal/shipyard 1 --tasks ROADMAP.md    # ship one task
+npx --allow-git=all github:shaal/shipyard --tasks ROADMAP.md      # drain the whole roadmap
 ```
 
 Inside Claude Code, `/ship-next ROADMAP.md` ships exactly one task.
