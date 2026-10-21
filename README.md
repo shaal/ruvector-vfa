@@ -35,7 +35,7 @@ npx @shaal/shipyard --tasks ROADMAP.md      # drain the whole roadmap
 
 Inside Claude Code, `/ship-next ROADMAP.md` ships exactly one task.
 
-Setup and demo instructions arrive with T01 and T16. You can already build the scene, hold the arm under gravity compensation, read the wrist F/T sensor, render a PNG, and time the impedance controller on a scripted grasp-and-lift:
+Setup and demo instructions arrive with T01 and T16. You can already build the scene, hold the arm under gravity compensation, read the wrist F/T sensor, render a PNG, time the impedance controller on a scripted grasp-and-lift, and draw cubes from the five hidden object classes in `configs/objects.toml` (`vfa.sim.objects`: `sample_object`, `apply_object`, and the `BreakMonitor` break rule):
 
 ```bash
 uv sync

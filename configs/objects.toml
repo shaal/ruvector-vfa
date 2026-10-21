@@ -1,0 +1,74 @@
+# Hidden object classes (ARCHITECTURE §4). Loaded by vfa.sim.objects.load_object_config.
+#
+# T04 created this file with the initial §4 table. T05 validates the ranges in
+# physics and may adjust them; T10 freezes the file (configs/benchmark.sha256).
+#
+# Units: m, kg, N, rad. Every range is [low, high] and is sampled uniformly.
+# Unknown keys are errors, so a typo cannot silently fall back to a default.
+
+# Visible pose of the cube on the table: center (x, y) in the world (= robot
+# base) frame and the yaw about world z. A cube looks the same after a quarter
+# turn, so yaw in [-pi/4, pi/4] covers every pose.
+[pose]
+x = [0.45, 0.60]
+y = [-0.15, 0.15]
+yaw = [-0.785398, 0.785398]
+
+# Contact constants shared by all classes. The cube geom has priority=1
+# (ARCHITECTURE D8), so these govern every cube contact.
+[contact]
+dampratio = 1.0     # solref[1]
+torsional = 0.005   # geom friction[1]
+rolling = 0.0001    # geom friction[2]
+
+# Contact softness presets: the MuJoCo solref time constant (solref[0]) range.
+# A larger time constant gives a softer contact. Measured in T04 (floating 5 cm
+# 0.1 kg cube, force motor, 8 N per finger, after 1 s): the fingers sink
+# 0.004-0.185 mm per side at time constant 0.02 and 0.068-1.392 mm at 0.08, for
+# mu 0.2-1.0. The sink also grows with friction (pyramidal friction cones) and
+# falls with mass; refer to ARCHITECTURE section 4 (T05 handoff).
+[softness]
+stiff = [0.015, 0.025]
+soft = [0.04, 0.08]
+
+# Optional perception noise on the observed cube pose (Gaussian sigma).
+# Benchmark v1 uses no noise.
+[perception]
+pos_sigma = 0.0   # m, on the observed x, y, z
+yaw_sigma = 0.0   # rad, on the observed yaw
+
+# Classes. size is visible and the same for every class, so it carries no class
+# information. mass, friction (sliding mu), softness, and break_force are hidden.
+# break_force compares with the SUM of both finger normal forces; omit it for a
+# cube that cannot break.
+
+[classes.light_rigid]
+size = [0.04, 0.06]
+mass = [0.05, 0.15]
+friction = [0.8, 1.0]
+softness = "stiff"
+
+[classes.heavy_rigid]
+size = [0.04, 0.06]
+mass = [0.6, 1.0]
+friction = [0.7, 1.0]
+softness = "stiff"
+
+[classes.slippery]
+size = [0.04, 0.06]
+mass = [0.15, 0.35]
+friction = [0.15, 0.30]
+softness = "stiff"
+
+[classes.fragile_soft]
+size = [0.04, 0.06]
+mass = [0.05, 0.20]
+friction = [0.6, 0.9]
+softness = "soft"
+break_force = [6.0, 12.0]
+
+[classes.heavy_slippery]
+size = [0.04, 0.06]
+mass = [0.5, 0.8]
+friction = [0.25, 0.40]
+softness = "stiff"
