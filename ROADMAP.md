@@ -63,7 +63,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~45 min. Tests < 15 s.
   - depends: T01
 
-- [ ] **T03 — Operational-space / impedance controller + gripper interface**
+- [x] **T03 — Operational-space / impedance controller + gripper interface**
   - Goal: System 1's low-level controller — compliant Cartesian control with torque output.
   - Deliverables:
     - `vfa/control/osc.py`: `OperationalSpaceController` — task-space impedance (position + orientation) with configurable stiffness/damping, gravity and Coriolis compensation (`qfrc_bias`), nullspace posture term toward `home`, torque clipping to actuator limits. Uses `mj_jacSite` and the mass matrix from `mj_fullM`.

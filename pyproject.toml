@@ -32,6 +32,7 @@ testpaths = ["tests"]
 markers = [
     "slow: physics sweeps and benchmarks (> ~5 s); excluded from the fast suite",
     "render: tests that render offscreen with mujoco.Renderer",
+    "perf: wall-clock throughput assertions (machine-dependent); excluded from CI",
 ]
 
 [tool.ruff]
