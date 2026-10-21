@@ -35,8 +35,13 @@ npx @shaal/shipyard --tasks ROADMAP.md      # drain the whole roadmap
 
 Inside Claude Code, `/ship-next ROADMAP.md` ships exactly one task.
 
-Setup and demo instructions arrive with T01 and T16.
+Setup and demo instructions arrive with T01 and T16. You can already build the scene, hold the arm under gravity compensation, read the wrist F/T sensor, and render a PNG:
+
+```bash
+uv sync
+uv run vfa scene-check --png runs/scene.png
+```
 
 ## License
 
-MIT (see [`LICENSE`](LICENSE)). The vendored Franka Panda model (added in T02) keeps its Apache-2.0 license from MuJoCo Menagerie.
+MIT (see [`LICENSE`](LICENSE)). The vendored Franka Panda model keeps its Apache-2.0 license from MuJoCo Menagerie (see [`assets/menagerie/NOTICE.md`](assets/menagerie/NOTICE.md)).

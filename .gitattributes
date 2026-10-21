@@ -1,0 +1,2 @@
+# Vendored third-party files: keep the bytes exactly as upstream (no EOL conversion).
+assets/menagerie/franka_emika_panda/** -text -diff linguist-vendored
