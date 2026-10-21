@@ -35,11 +35,12 @@ npx @shaal/shipyard --tasks ROADMAP.md      # drain the whole roadmap
 
 Inside Claude Code, `/ship-next ROADMAP.md` ships exactly one task.
 
-Setup and demo instructions arrive with T01 and T16. You can already build the scene, hold the arm under gravity compensation, read the wrist F/T sensor, and render a PNG:
+Setup and demo instructions arrive with T01 and T16. You can already build the scene, hold the arm under gravity compensation, read the wrist F/T sensor, render a PNG, and time the impedance controller on a scripted grasp-and-lift:
 
 ```bash
 uv sync
 uv run vfa scene-check --png runs/scene.png
+uv run python -m vfa.control.throughput      # time the OSC + gripper control loop
 ```
 
 ## License
