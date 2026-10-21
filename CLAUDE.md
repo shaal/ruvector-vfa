@@ -85,6 +85,14 @@ Some tasks state numeric targets (success rates, attempts-to-success). If a targ
 4. The current task may then ship if every non-numeric acceptance item is met. Say "target missed, follow-up Txx-b added" in the PR body.
 5. If a follow-up task (`-b`) also misses its target, **fail the gate** and stop. A human decides.
 
+## Sizing parameters on data (lesson from T06)
+
+When a task picks parameters from measurements (thresholds, filters, margins), as T06 did for the slip detector (`docs/FEASIBILITY.md` §8):
+
+- Choose on a tune set with a rule written down before any held-out set runs; score the held-out set once. A changed design or rule needs fresh held-out samples: record which sample ranges are spent.
+- Report intervals (bootstrap over attempts, not over seeds that share physics), tails (p90, max, the share that comes too late), and rates by the subgroup at risk (e.g. cube mass), not only pooled medians.
+- Check the choice beyond the harness: longer runs, other control rates, the event pipeline end to end.
+
 ## Code conventions
 
 - Package: `src/vfa/` (import name `vfa`). Subpackages: `sim`, `control`, `skills`, `memory`, `cognition`, `experiments`, `viz`. Refer to `docs/ARCHITECTURE.md` for the layout.

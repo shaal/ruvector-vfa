@@ -36,13 +36,14 @@ npx @shaal/shipyard --tasks ROADMAP.md      # drain the whole roadmap
 
 Inside Claude Code, `/ship-next ROADMAP.md` ships exactly one task.
 
-Setup and demo instructions arrive with T01 and T16. You can already build the scene, hold the arm under gravity compensation, read the wrist F/T sensor, render a PNG, time the impedance controller on a scripted grasp-and-lift, draw cubes from the five hidden object classes in `configs/objects.toml` (`vfa.sim.objects`: `sample_object`, `apply_object`, and the `BreakMonitor` break rule), and run the T05 grip-force spike:
+Setup and demo instructions arrive with T01 and T16. You can already build the scene, hold the arm under gravity compensation, read the wrist F/T sensor, render a PNG, time the impedance controller on a scripted grasp-and-lift, draw cubes from the five hidden object classes in `configs/objects.toml` (`vfa.sim.objects`: `sample_object`, `apply_object`, and the `BreakMonitor` break rule), run the T05 grip-force spike, and record a grasp with the T06 sensors, events, and episode recorder (`vfa.sim.sensors`, `vfa.sim.recorder`) and plot its force profile (`vfa.viz.force_plot`):
 
 ```bash
 uv sync
 uv run vfa scene-check --png runs/scene.png
-uv run python -m vfa.control.throughput      # time the OSC + gripper control loop
-uv run python scripts/spike_grip.py --quick  # grip force × closing speed × class (~30-60 s, 8 workers)
+uv run python -m vfa.control.throughput --sense  # time the control loop, with and without sensing
+uv run python scripts/spike_grip.py --quick      # grip force × closing speed × class (~30-60 s, 8 workers)
+uv run python scripts/record_episode.py --open-at 0.6 --png runs/t06/drop.png   # one recorded grasp
 ```
 
 ## License

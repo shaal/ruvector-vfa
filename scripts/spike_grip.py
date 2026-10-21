@@ -44,7 +44,6 @@ import math
 import os
 import sys
 import time
-from collections import deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field, replace
@@ -57,6 +56,7 @@ from vfa.control.gripper import Gripper
 from vfa.control.osc import CONTROL_HZ, OperationalSpaceController, control_step
 from vfa.sim import objects as OB
 from vfa.sim import scene as S
+from vfa.sim.sensors import T05_SLIP, LowPass, SlipDetector  # noqa: F401 (LowPass: tests)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = REPO_ROOT / "runs" / "spike"
@@ -88,30 +88,28 @@ SLIP_GT_M = 0.005
 # Squeeze timing: the gripper's speed servo ramps the force at 250·speed N/s per finger.
 RAMP_N_PER_S_PER_MPS = 250.0
 
-# F/T slip detector (held-mass drop). The vertical wrist force over the wrist's
-# vertical proper acceleration (an accelerometer in the F/T sensor: +g at rest) is
-# the mass hanging below the wrist, F_z / a_z. Minus the hand's own mass (the
-# tare) it is the held cube's mass while the cube moves with the hand, whatever
-# the lift profile. In a slip the cube accelerates less than the hand, so the
-# estimate falls. It fires below DROP_FRACTION of its running peak, once the peak
-# passed ARM_LOAD_N / g (0.15 N ≈ 15 g: every class's lightest cube is 50 g).
-FT_FILTER_HZ = 20.0  # first-order low-pass on the mass estimate
-DROP_FRACTION = 0.9
+# F/T slip detector (held-mass drop): ``vfa.sim.sensors.SlipDetector`` since T06,
+# run here with the T05 parameters (``T05_SLIP``), so the spike's tables stay
+# reproducible. The vertical wrist force over the wrist's vertical proper
+# acceleration (an accelerometer in the F/T sensor: +g at rest) is the mass
+# hanging below the wrist, F_z / a_z. Minus the hand's own mass (the tare) it is
+# the held cube's mass while the cube moves with the hand, whatever the lift
+# profile. In a slip the cube accelerates less than the hand, so the estimate
+# falls. It fires below DROP_FRACTION of its running peak, once the peak passed
+# ARM_LOAD_N / g (0.15 N ≈ 15 g: every class's lightest cube is 50 g).
+FT_FILTER_HZ = T05_SLIP.cutoff_hz  # first-order low-pass on the mass estimate
+DROP_FRACTION = T05_SLIP.drop_fraction
 # The drop must hold this long to fire (3 ticks at 500 Hz). Chosen from
 # WINDOW_SWEEP on earlier runs, which included the quick profile's noise cubes
 # (sample NOISE_FIRST_QUICK) and the first held-out cubes (samples 9000-9002):
 # 1-2 ticks fire more on noise, 5-10 miss stick-slip partial slips (their dips
 # are short). The full profile's held-out cubes (NOISE_FIRST_FULL) were first
 # run after this choice and DROP_FRACTION were fixed (T05 review round 3).
-DEBOUNCE_S = 0.006
+DEBOUNCE_S = T05_SLIP.debounce_s
 # Debounce windows [ticks] whose lowest ratio every attempt also records, so the
 # summary scores each (window, threshold) pair exactly.
 WINDOW_SWEEP: tuple[int, ...] = (1, 2, 3, 5, 10)
-ARM_LOAD_N = 0.15
-# Valid proper vertical acceleration [m/s²]; outside it (near free fall, or an
-# absurd reading) the mass estimate is skipped.
-MIN_PROPER_ACC = 1.0
-MAX_PROPER_ACC = 100.0
+ARM_LOAD_N = T05_SLIP.arm_load_n
 TRACE_HZ = 50  # downsampled traces stored per attempt (lift + hold)
 
 
@@ -147,86 +145,11 @@ class AttemptResult:
     trace: dict = field(default_factory=dict)  # t, load, rel (TRACE_HZ, lift + hold)
 
 
-class LowPass:
-    """First-order low-pass filter (exponential smoothing) at a fixed sample rate."""
-
-    def __init__(self, cutoff_hz: float, dt: float) -> None:
-        self.alpha = 1.0 - math.exp(-2.0 * math.pi * cutoff_hz * dt)
-        self.value: float | None = None
-
-    def __call__(self, x: float) -> float:
-        self.value = x if self.value is None else self.value + self.alpha * (x - self.value)
-        return self.value
-
-
-class FTSlipDetector:
-    """Causal slip detector on the wrist F/T and accelerometer (no privileged signals).
-
-    ``tare(f_z, a_z)`` stores the hand's own mass ``f_z / a_z`` (the caller
-    averages both before contact). Each ``update(t, f_z, a_z)`` takes the
-    world-frame vertical wrist force [N] and the wrist's vertical proper
-    acceleration [m/s², +g at rest]. The held mass ``f_z / a_z − m_hand`` is
-    low-passed at ``FT_FILTER_HZ``; ``load`` and ``peak`` report it as a weight
-    [N]. The detector fires (and latches) once the estimate stays below
-    ``DROP_FRACTION`` of its running peak for ``DEBOUNCE_S``, after the peak
-    passed ``ARM_LOAD_N``. A non-finite or out-of-range sample is skipped.
-    ``min_ratio`` is the lowest debounced ratio seen (``None`` before arming):
-    the detector would fire at any threshold above it, so one run scores every
-    threshold exactly.
-    """
+class FTSlipDetector(SlipDetector):
+    """The T05 detector: ``SlipDetector`` with ``T05_SLIP``, recording ``WINDOW_SWEEP``."""
 
     def __init__(self, dt: float, g: float = 9.81) -> None:
-        self.dt = dt
-        self.g = g
-        self.hand_mass = 0.0
-        self.filter = LowPass(FT_FILTER_HZ, dt)
-        self.mass = 0.0
-        self.peak_mass = 0.0
-        self.fired_at: float | None = None
-        self.min_ratio: float | None = None
-        window = max(1, round(DEBOUNCE_S / dt))
-        self._recent: deque[float] = deque(maxlen=max(window, *WINDOW_SWEEP))
-        self._window = window
-        self.min_ratio_by_window: dict[int, float | None] = dict.fromkeys(WINDOW_SWEEP)
-
-    @property
-    def tare_n(self) -> float:
-        return self.hand_mass * self.g
-
-    @property
-    def load(self) -> float:
-        return self.mass * self.g
-
-    @property
-    def peak(self) -> float:
-        return self.peak_mass * self.g
-
-    def tare(self, f_z: float, a_z: float) -> None:
-        if not (math.isfinite(f_z) and MIN_PROPER_ACC <= a_z <= MAX_PROPER_ACC):
-            raise ValueError(
-                f"tare needs finite readings with the hand at rest, got {f_z!r}, {a_z!r}"
-            )
-        self.hand_mass = f_z / a_z
-
-    def update(self, t: float, f_z: float, a_z: float) -> bool:
-        if math.isfinite(f_z) and MIN_PROPER_ACC <= a_z <= MAX_PROPER_ACC:
-            self.mass = self.filter(f_z / a_z - self.hand_mass)
-            self.peak_mass = max(self.peak_mass, self.mass)
-            if self.peak >= ARM_LOAD_N:
-                self._recent.append(self.mass / self.peak_mass)
-                for w, low in self.min_ratio_by_window.items():
-                    if len(self._recent) >= w:
-                        ratio = max(list(self._recent)[-w:])
-                        if low is None or ratio < low:
-                            self.min_ratio_by_window[w] = ratio
-                if len(self._recent) >= self._window:
-                    # below the line for the whole window
-                    debounced = max(list(self._recent)[-self._window :])
-                    if self.min_ratio is None or debounced < self.min_ratio:
-                        self.min_ratio = debounced
-                    if self.fired_at is None and debounced < DROP_FRACTION:
-                        self.fired_at = t
-        return self.fired_at is not None
+        super().__init__(dt, g, T05_SLIP, track_windows=WINDOW_SWEEP)
 
 
 def min_jerk(s: float) -> float:
@@ -313,6 +236,7 @@ def run_attempt(
     release: tuple[float, float] | None = None,
     ft_noise: tuple[float, float] = (0.0, 0.0),
     noise_rng: np.random.Generator | None = None,
+    tick_log: dict[str, list[float]] | None = None,
 ) -> AttemptResult:
     """Scripted grasp-and-lift of ``spec`` with squeeze ``grip`` [N/finger] at ``speed`` [m/s].
 
@@ -322,6 +246,11 @@ def run_attempt(
     starts (the release study: a slip in mid-air, after a clean lift).
     ``ft_noise = (σ_F, σ_a)`` adds white Gaussian noise [N, m/s²] from
     ``noise_rng`` to the detector's two inputs every tick (the noise study).
+    ``tick_log`` (a dict) receives the detector's inputs at control rate, for
+    offline replays (T06's ``scripts/size_slip_detector.py``): ``tare_f`` and
+    ``tare_a`` (the tare window), ``sq_f`` and ``sq_a`` (each squeeze tick),
+    then ``t``, ``f_z``, ``a_z``, and the ground truth ``rel`` (the cube's fall
+    relative to the ee is ``-rel`` [m]) for each lift and hold tick.
     """
     sigma_f, sigma_a = ft_noise
     if (sigma_f > 0 or sigma_a > 0) and not isinstance(noise_rng, np.random.Generator):
@@ -369,6 +298,11 @@ def run_attempt(
         tare_a.append(a_z)
     detector = FTSlipDetector(DT, float(np.linalg.norm(model.opt.gravity)))
     detector.tare(float(np.mean(tare_f)), float(np.mean(tare_a)))
+    if tick_log is not None:
+        for key in ("tare_f", "tare_a", "sq_f", "sq_a", "t", "f_z", "a_z", "rel"):
+            tick_log[key] = []
+        tick_log["tare_f"].extend(tare_f)
+        tick_log["tare_a"].extend(tare_a)
 
     # Squeeze: wait until the gripper reports the force (its own feedback) or time out.
     t_squeeze = float(data.time)
@@ -378,6 +312,10 @@ def run_attempt(
     reached_at: float | None = None
     while data.time < deadline and not monitor.broken:
         tick()
+        if tick_log is not None:
+            f_z, a_z = sensed()
+            tick_log["sq_f"].append(f_z)
+            tick_log["sq_a"].append(a_z)
         if (
             reached_at is None
             and gripper.actuator_squeeze() >= 0.99 * grip
@@ -407,8 +345,12 @@ def run_attempt(
         path_target(osc, start, start + (0.0, 0.0, LIFT_M), t, LIFT_S, yaw)
         tick()
         t = float(data.time) - t0
-        detector.update(t, *sensed())
+        f_z, a_z = sensed()
+        detector.update(t, f_z, a_z)
         rel = float(data.xpos[ids.cube_body, 2] - data.site_xpos[ids.ee_site, 2]) - rel0
+        if tick_log is not None:
+            for key, value in (("t", t), ("f_z", f_z), ("a_z", a_z), ("rel", rel)):
+                tick_log[key].append(value)
         rel_drop = max(rel_drop, -rel)
         if gt_time is None and -rel > SLIP_GT_M:
             gt_time = t

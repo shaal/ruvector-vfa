@@ -111,7 +111,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
 
 ## Phase B — System 1: environment, skill, safety, baseline
 
-- [ ] **T06 — Sensors, events, and episode recorder**
+- [x] **T06 — Sensors, events, and episode recorder**
   - Goal: everything the memory later embeds, logged at control rate.
   - Deliverables:
     - `vfa/sim/sensors.py`: tared and low-pass-filtered wrist wrench, finger contact flags and normal forces, gripper width, EE pose/velocity. Promote the T05 slip detector here.

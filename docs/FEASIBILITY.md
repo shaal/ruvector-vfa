@@ -162,7 +162,7 @@ Precision **0.991** (95 % Wilson interval 0.98–1.00), recall **0.996** (0.99�
 | 0.02 | 0.01 | 75 | 34 | 34 | 3 | 0 | 0.919 | 1.000 |
 | 0.05 | 0.02 | 75 | 34 | 34 | 10 | 0 | 0.773 | 1.000 |
 
-At 0.05 N the noise on a light cube's estimate is a sizable fraction of the 10 % band, and false alarms grow. T06 must model the real sensor and size the filter and threshold for it.
+At 0.05 N the noise on a light cube's estimate is a sizable fraction of the 10 % band, and false alarms grow. T06 must model the real sensor and size the filter and threshold for it (done: §8).
 
 **Threshold and debounce** (exact: each attempt records its lowest debounced held-mass/peak ratio, so one run scores every threshold):
 
@@ -225,7 +225,66 @@ Partial slips exist only within a few percent of a cube's need (the release, mar
 ## 7. Handoffs and risks
 
 - **T10 `best_fixed` ≤ 75 % is at risk.** The best single (force, speed) pooled over the five classes is 16 N at 0.02 m/s with **80 %** (20/25 here). It succeeds on every class except `fragile_soft`, so with equal class weights a fixed θ that sacrifices one class scores 80 %. T10 must widen the conflict in `configs/objects.toml` (for example, a second class that fails at high grip, or class weights) and re-measure. T05 did not change the classes: its own criteria passed, and the benchmark is T10's to freeze.
-- **T06: the detector needs a wrist accelerometer and a noise model.** The held-mass estimate uses the wrist's proper acceleration (`mj_objectAcceleration` on the wrist site; a real F/T sensor with an IMU reports the same). T06 should add it as a scene sensor, model the sensor noise, and re-size the filter, threshold, and debounce (§5: at σ 0.05 N the held-out precision falls to 0.773; noise-free, the 1–50 mm slips score 0.870 / 0.930). The estimate is also the heft probe's mass reading.
+- **T06: the detector needs a wrist accelerometer and a noise model** (done: §8). The held-mass estimate uses the wrist's proper acceleration (`mj_objectAcceleration` on the wrist site; a real F/T sensor with an IMU reports the same). T06 should add it as a scene sensor, model the sensor noise, and re-size the filter, threshold, and debounce (§5: at σ 0.05 N the held-out precision falls to 0.773; noise-free, the 1–50 mm slips score 0.870 / 0.930). The estimate is also the heft probe's mass reading.
 - **`close_speed` also sets the force ramp and the impact.** A slow speed with a large force is a slow grasp (30 N at 0.02 m/s ramps for 6 s; in the map the squeeze took 7.2–8.1 s), and a fast close hits hard at small forces (3.1× on a stiff cube at 1 N, 0.5 m/s). T08's bounds on θ must keep the squeeze inside the attempt budget, and the speed must stay within 0.001–0.5 m/s. Skills always pass a speed: the default is the fastest close (the hardest impact), and `speed=None` is the T03 law, which only tests use. Grasp at the cube's center height, as the spike does: the pad touch sensors also read the table, and fingertips that drag on it were not part of any T05 study.
 - **Descents need the feed-forward velocity.** Over 35 cubes a 12 cm, 1.0 s minimum-jerk descent drifted 7.2 mm sideways without `vel=` (median; max 7.9 mm) and 1.8 mm with it (max 2.0 mm, probe). In an earlier full run with a rate-limited descent target (13.6 mm median drift), a fingertip landed on a 5.9 cm cube (10.5 mm clearance per side) and broke it before the squeeze. T08's approach, descent, and lift must feed the path velocity forward.
 - **The probe signal.** Elliptic cones remove the friction coupling of the contact sink (ARCHITECTURE §4, T05 handoff (1)): a settled cube now sinks 0.08–0.14 mm (stiff) or 0.46–0.75 mm (soft) into the table, set by softness alone (probe, seeds 0–2 of every class: 0.077–0.144 mm and 0.463–0.748 mm).
+
+## 8. T06: the slip detector under sensor noise
+
+T06 made the detector a real sensor: the scene's `wrist_acc` accelerometer, a noise model (`SensorNoise`; `REALISTIC_NOISE` = 0.05 N per force axis, 0.003 N·m per torque axis, 0.03 m/s² per accelerometer axis, 0.05 N per pad, sources in `vfa/sim/sensors.py`), and a detector that stays T05's without noise (ARCHITECTURE §3, D13):
+
+- **An explicit watch.** `SensorSuite.watch_slip()` when the hand starts to carry, `unwatch_slip()` before it sets the cube down. The closing fingers drag the cube on the table and load the wrist by up to 0.23 N, and a set-down collapses the load: an always-armed detector read both as slips and drops.
+- **With noise, a margin.** The drop must exceed `drop_fraction` of the peak **plus** `noise_k` standard deviations of the filtered estimate, `σ = sqrt(σ_F² + ((m_hand + m)·σ_a)²)·sqrt(α/(2 − α))`, taken from the sensor's noise spec at the tick rate. T05's 10 % band on a 50 g cube (0.049 N) is about 2.5σ under `REALISTIC_NOISE`.
+- **With noise, a 0.5 s peak window.** The running maximum of a noisy estimate keeps growing the longer it runs, so with an all-time peak the false alarms of a held light cube grew with the carry.
+- Without noise there is no margin and no window: the detector is T05's, bit for bit (a test pins it), so only `noise_k` needed sizing.
+
+```bash
+uv run python scripts/size_slip_detector.py --workers 8   # physics (≈ 20 s, resumable) + tables
+uv run python scripts/size_slip_detector.py --check       # vectorized replay == SlipDetector
+```
+
+**Method: physics once, noise offline.** The detector does not act on the physics, so each attempt runs once, noise-free, in T05's near-threshold harness (margin 0.98, 1.0, 1.04, 1.3; release 0.9; 5 classes), logging the detector's inputs every tick (tare window, squeeze, lift, hold) and the ground truth (the cube falls more than 5 mm relative to the ee). The replay adds white noise to F_z and a_z, the tare samples included, with 5 seeds per attempt and noise level, and runs the detector as `SensorSuite` does: the filter runs from the tare, the detector watches from the lift. Two checks hold the replay to the real thing: with T05's semantics, parameters, and no noise it reproduces T05's held-out counts exactly (34 TP, 3 FP, 0 FN; §5), and it equals `SlipDetector` bit for bit (`--check`: 0 mismatches in 2160 lowest values, noisy rows, margins, and the window included; a test pins it on synthetic rows).
+
+**Scoring.** A firing counts as a detection only from 250 ms before the 5 mm line on (noise-free, T05's detector never fires earlier than 186 ms before it); an earlier firing is a false alarm and the slip a miss. The tables give lag quantiles, the share of detections after the 5 mm line, false alarms by cube mass, and 95 % intervals from a bootstrap over attempts (the noise seeds of one attempt share its physics, so they are resampled together).
+
+**Protocol.** Cube sets: `t05` (samples 9100–9102, the replay check), `tune` (9200–9205), `holdout` (9700–9705), 75 + 2 × 150 attempts, none broken. Rule, fixed before `holdout` ran: the smallest `noise_k` that (a) reaches 0.9 precision and 0.8 recall as `tune` bootstrap lower bounds under `REALISTIC_NOISE`, and (b) false-alarms on at most 5 of 100 synthetic 10 s holds of a 50 g cube (the lightest in the classes) under `REALISTIC_NOISE`. Criterion (b) covers carries longer than the harness's 2 s, where the harness's precision (pooled over a slip-heavy mix) cannot see a light cube's false-alarm rate.
+
+`tune`, `REALISTIC_NOISE` (345 slip rows, 405 hold rows):
+
+| noise_k | precision (95 % CI) | recall (95 % CI) | lag p50 / p90 | after the 5 mm line | held cubes false-alarming < 75 g / 75–100 / 100–150 / ≥ 150 g | 10 s holds of 50 g false-alarming |
+|---|---|---|---|---|---|---|
+| 0 (T05) | 0.672 (0.58–0.77) | 0.896 (0.82–0.96) | −76 / −46 ms | 6 % | 30/30, 59/60, 26/60, 5/255 | 100/100 |
+| 2 | 0.868 (0.79–0.93) | 0.968 (0.93–1.00) | −68 / −36 ms | 7 % | 24/30, 12/60, 11/60, 0/255 | 100/100 |
+| 3 | 0.949 (0.91–0.98) | 0.974 (0.93–1.00) | −64 / −24 ms | 9 % | 7/30, 5/60, 6/60, 0/255 | 66/100 |
+| **4** | 0.991 (0.98–1.00) | 0.962 (0.91–1.00) | −58 / +9 ms | 12 % | 1/30, 0/60, 2/60, 0/255 | 2/100 |
+| 6 | 1.000 (1.00–1.00) | 0.942 (0.89–0.98) | −54 / +76 ms | 18 % | 0, 0, 0, 0 | 0/100 |
+| 10 | 1.000 (1.00–1.00) | 0.864 (0.78–0.94) | −40 / +260 ms | 36 % | 0, 0, 0, 0 | 0/100 |
+
+`noise_k` 3 passes (a) but fails (b); 4 is the choice. `holdout` (70 slipping, 80 holding attempts), scored once after the choice:
+
+| noise | detector | precision (95 % CI) | recall (95 % CI) | lag p50 / p90 | after the 5 mm line | held cubes false-alarming < 75 / 75–100 / 100–150 / ≥ 150 g |
+|---|---|---|---|---|---|---|
+| none | both (identical) | 0.918 (0.85–0.97) | 0.957 (0.91–1.00) | −70 / −45 ms | 7 % | 2/12, 1/3, 3/12, 0/53 |
+| σ 0.02 N / 0.01 m/s² | `noise_k` 4 | 0.965 (0.92–1.00) | 0.957 (0.91–1.00) | −68 / −34 ms | 9 % | 2/60, 0/15, 10/60, 0/265 |
+| | T05 | 0.911 (0.84–0.97) | 0.969 (0.92–1.00) | −70 / −48 ms | 9 % | 12/60, 5/15, 15/60, 1/265 |
+| σ 0.05 N / 0.02 m/s² | `noise_k` 4 | 0.979 (0.95–1.00) | 0.951 (0.90–0.99) | −62 / +20 ms | 13 % | 2/60, 0/15, 5/60, 0/265 |
+| | T05 | 0.721 (0.62–0.81) | 0.900 (0.83–0.96) | −72 / −48 ms | 9 % | 60/60, 15/15, 20/60, 3/265 |
+| realistic | `noise_k` 4 | **0.982** (0.95–1.00) | **0.954** (0.90–1.00) | −64 / +20 ms | 13 % | 0/60, 0/15, 6/60, 0/265 |
+| | T05 | 0.708 (0.61–0.80) | 0.886 (0.81–0.95) | −73 / −48 ms | 8 % | 60/60, 15/15, 22/60, 4/265 |
+
+The noise-free false alarms are real 1.4–2.4 mm slips of `light_rigid` cubes below the 5 mm line (§5). By attempt type (`holdout`, `noise_k` 4): the mid-air release slips are always caught before the 5 mm line (latest −42 ms); the lift-off slips are not. Under `REALISTIC_NOISE`, 21 % of the margin-0.98 detections (149) come after the line (p90 +106 ms, max +318 ms) and 29 % of the margin-1.0 ones (35; p90 and max +230 ms), 23 % pooled; without noise, where the margin is 0, 13 % and 14 % (37 detections, max +294 ms).
+
+**End to end** (`SensorSuite`, the scripted grasp of `scripts/record_episode.py`, `REALISTIC_NOISE`): two 50 g `fragile_soft` cubes and a 56 g `light_rigid` cube, 10 seeds each, raised no false `SLIP`; a 50 g cube held 1, 10, and 20 s (`fragile_soft` sample 2, seeds 100–139) false-slipped 0, 1, and 2 times. On the T03 scripted lift (0.1 kg cube, 10 s) there was no false `SLIP` or `DROP` in 30 seeds at each of 500, 250, 125, and 100 Hz. A 1–2 cm heft that is set down again (`--heft`: watch, rise over at least sqrt(10·h) s, hold, `unwatch_slip()`, lower at 2 cm/s until the table carries the cube) raised neither in 180 episodes (5 classes × 6 cubes × 1, 1.5, 2 cm, with and without `REALISTIC_NOISE`); the hand carried under the rule's 20 % of the load when the lift started (at most 18 % measured). In 480 more hefted episodes (1.5 and 2 cm, noise-free; `fragile_soft` at 1–2 N, `slippery`, `heavy_slippery`, `heavy_rigid` near their window edges) against their 320 no-heft baselines, the heft changed no outcome. Just below the windows it can: a review found 4 of 240 hefted episodes that ended better than without the heft (DROP to SLIP or SUCCESS, SLIP to SUCCESS), cubes right at their hold/drop threshold. Hefts under 1 cm are refused: the arm's payload sag (≈ 6.5 mm/kg) leaves a heavy cube barely off the table, it settles back during the hold, and the detector reads a false `SLIP` (5 mm on `heavy_rigid`: 8 of 10 cubes, a review found). With the gripper opened mid-lift, the drop after a heft is still reported (test).
+
+**Rejected designs.** Four earlier T06 designs fell to the tail or the noise, each found by measurement or review; each used its own held-out cubes, which the final protocol leaves alone. (1) Grid-searching T05's own parameters picked a 100 ms debounce: it fired a median 294 ms after the 5 mm line (cubes 9300–9305). (2) A slow (2 or 5 Hz) running peak met the bar with a median lag ≤ 0 (cubes 9400–9405), but a review found 21–41 % of its detections after the line, up to +310 ms, because the slow peak missed the brief load rise at lift-off; its `rearm` also re-fired on a steady load. (3) The margin with an all-time peak (cubes 9500–9505) scored well on the 2 s harness, but a review's 50 g holds false-slipped on 9 of 40 seeds at 10 s and 13 of 40 at 20 s. (4) The window with the point-estimate rule picked `noise_k` 3 (cubes 9600–9605), which false-alarms on 66 of 100 synthetic 10 s holds of a 50 g cube; criterion (b) came from that.
+
+**Limits.**
+
+- **The lightest cubes on long carries.** The margin and the window keep the false alarms on the lightest cubes rare, not absent. Synthetic holds of a 50 g cube under `REALISTIC_NOISE` at 500 Hz (100 seeds, the script's protocol): 0 false alarms within 2 s, 2 within 10 s, 9 within 30 s, 15 within 60 s; a 65 g cube 1 within 60 s, from 75 g up none. A 10 % slip of a 50 g cube is about the noise.
+- **Later lift-off detections under noise** (above). T08's reflex gets less warning on lift-off slips than without noise.
+- **Sized at 500 Hz.** The margin follows the filter's gain at the tick rate and the debounce is at least two ticks, but the 10 % band shrinks in σ units at lower rates: the 10 s hold of a 50 g cube false-alarms 2, 13, 8, and 7 times in 100 at 500, 250, 125, and 100 Hz with `noise_k` 4, and 0, 1, 0, 0 with `noise_k` 5. Below 500 Hz, use `noise_k` 5. At 500 Hz it would cost warning: on `holdout` under `REALISTIC_NOISE` it scores 0.994 / 0.954 with 17 % of the detections after the 5 mm line (lift-off: 30 %, up to +332 ms), against 13 % for `noise_k` 4.
+- **Outside the noise model.** A single-sample glitch of a few N in the F/T reading, or a 2–10 ms push on the hand, can fire `SLIP` (a review found it; inherited from T05, whose low-pass spreads one sample over about 10 ticks).
+- **The harness.** T05's grips (a 0.1 m/s close, a 1 s, 10 cm lift) and its 5 mm ground-truth line.
+
+**Handoffs.** T10 records the sensor noise in `configs/benchmark.toml` (the detector reads it from `SensorConfig`) and uses `noise_k` 5 with noise below 500 Hz. T08 calls `SensorSuite.watch_slip()` when its heft and its lift start, `unwatch_slip()` when a carry ends (a set-down, a drop, a failure: a watch left on from an earlier grasp raises no events), sets a hefted cube down until the load falls, and calls `SlipDetector.rearm()` after a slip reflex.

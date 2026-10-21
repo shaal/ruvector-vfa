@@ -468,10 +468,14 @@ class BreakMonitor:
         self.peak_force = 0.0  # largest summed finger force seen [N]
         self.break_time: float | None = None  # data.time when it broke [s]
         self.break_load: float | None = None  # summed force that broke it [N]
+        # (left, right) finger-to-cube normal forces of the last update() [N]; the
+        # T06 recorder logs them, so an attempt walks the contacts once per tick.
+        self.last_forces: tuple[float, float] = (0.0, 0.0)
 
     def update(self) -> bool:
         """Read the finger forces and apply the rule. Returns ``broken``."""
         left, right = finger_cube_forces(self.model, self.data, self.ids)
+        self.last_forces = (left, right)
         return self.check(left + right, float(self.data.time))
 
     def check(self, force_sum: float, time: float) -> bool:
