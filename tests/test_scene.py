@@ -1,9 +1,11 @@
 """T02: Panda + table + cube scene built with MjSpec from the pristine Menagerie Panda.
 
 Covers the acceptance list in ROADMAP T02: the model compiles; 7 arm torque
-motors + the menagerie gripper actuator exist; the wrist F/T reads the
-hand+fingers weight at rest; a gravity-compensated hold drifts < 1 cm in 2 s.
-Also pins the vendored files, the per-episode hooks, and the touch sensors.
+motors + the gripper actuator exist; the wrist F/T reads the hand+fingers
+weight at rest; a gravity-compensated hold drifts < 1 cm in 2 s. Also pins the
+vendored files, the per-episode hooks, and the touch sensors. T05 made the
+gripper a force motor (the menagerie servo stays as ``SceneConfig(gripper="servo")``)
+and excluded finger-finger contacts.
 """
 
 from __future__ import annotations
@@ -105,7 +107,85 @@ def test_motor_ctrl_is_joint_torque(model: mujoco.MjModel, ids: S.SceneIds) -> N
     )
 
 
-def test_gripper_keeps_menagerie_tendon_actuator(model: mujoco.MjModel, ids: S.SceneIds) -> None:
+def test_gripper_is_a_force_motor_on_the_split_tendon(
+    model: mujoco.MjModel, ids: S.SceneIds
+) -> None:
+    """T05: ctrl = tendon force [N], ±100 N, so each finger gets up to 50 N."""
+    g = ids.gripper_actuator
+    assert g == 7
+    assert model.actuator_trntype[g] == mujoco.mjtTrn.mjTRN_TENDON
+    assert model.tendon(model.actuator_trnid[g, 0]).name == "split"
+    assert model.actuator_dyntype[g] == mujoco.mjtDyn.mjDYN_NONE
+    assert model.actuator_gaintype[g] == mujoco.mjtGain.mjGAIN_FIXED
+    assert model.actuator_biastype[g] == mujoco.mjtBias.mjBIAS_NONE
+    assert model.actuator_gainprm[g, 0] == 1.0 and model.actuator_gear[g, 0] == 1.0
+    limit = S.GRIPPER_FORCE_LIMIT
+    np.testing.assert_array_equal(model.actuator_ctrlrange[g], [-limit, limit])
+    np.testing.assert_array_equal(model.actuator_forcerange[g], [-limit, limit])
+    assert model.actuator_ctrllimited[g] and model.actuator_forcelimited[g]
+    data = mujoco.MjData(model)
+    S.reset_to_home(model, data)
+    data.ctrl[g] = -30.0  # 30 N closing on the tendon
+    mujoco.mj_forward(model, data)
+    assert data.actuator_force[g] == pytest.approx(-30.0)
+    fingers = [model.jnt_dofadr[model.joint(n).id] for n in S.FINGER_JOINTS]
+    np.testing.assert_allclose(data.qfrc_actuator[fingers], [-15.0, -15.0])
+
+
+def test_fingers_never_collide_with_each_other(model: mujoco.MjModel, ids: S.SceneIds) -> None:
+    """T05: a squeeze on nothing drove the finger meshes into each other, where they jammed."""
+    left = model.body(S.LEFT_FINGER_BODY).id
+    right = model.body(S.RIGHT_FINGER_BODY).id
+    signature = (left << 16) + right if left < right else (right << 16) + left
+    assert signature in set(model.exclude_signature)
+    data = mujoco.MjData(model)
+    S.reset_to_home(model, data)
+    data.qpos[ids.finger_qpos] = -0.005  # the fingers overlap by 1 cm
+    mujoco.mj_forward(model, data)
+    pairs = {
+        frozenset((model.geom_bodyid[c.geom1], model.geom_bodyid[c.geom2]))
+        for c in data.contact[: data.ncon]
+    }
+    assert frozenset((left, right)) not in pairs
+
+
+def test_without_the_exclusion_a_squeeze_on_nothing_jams_the_fingers() -> None:
+    """Why the exclusion exists: the end stop alone cannot stop fingers that arrive at
+    several m/s (a 50 N squeeze without a speed); their meshes lock into each other."""
+    from vfa.control import osc as O
+    from vfa.control.gripper import Gripper
+
+    widths = {}
+    for excluded in (True, False):
+        spec = S.build_spec()
+        if not excluded:
+            (finger,) = [
+                e
+                for e in spec.excludes
+                if {e.bodyname1, e.bodyname2} == {"left_finger", "right_finger"}
+            ]
+            spec.delete(finger)
+        model = spec.compile()
+        ids = S.scene_ids(model)
+        data = mujoco.MjData(model)
+        S.reset_to_home(model, data)
+        S.place_cube(model, data, 0.2, 0.6)
+        osc = O.OperationalSpaceController(model, data, ids=ids)
+        gripper = Gripper(model, data, ids)
+        gripper.squeeze(50.0)
+        for _ in range(round(1.5 * O.CONTROL_HZ)):
+            O.control_step(model, data, [osc, gripper], 1)
+        gripper.open()
+        for _ in range(round(1.0 * O.CONTROL_HZ)):
+            O.control_step(model, data, [osc, gripper], 1)
+        widths[excluded] = gripper.width()
+    assert widths[True] == pytest.approx(0.08, abs=1e-3)
+    assert widths[False] < -0.02, widths  # measured -47 mm, still there after open()
+
+
+def test_servo_option_keeps_menagerie_tendon_actuator() -> None:
+    model = S.build_scene(S.SceneConfig(gripper="servo"))
+    ids = S.scene_ids(model)
     pristine = mujoco.MjModel.from_xml_path(str(S.PANDA_XML))
     p = mujoco.mj_name2id(pristine, mujoco.mjtObj.mjOBJ_ACTUATOR, S.GRIPPER_ACTUATOR)
     g = ids.gripper_actuator
@@ -181,6 +261,10 @@ def test_home_keyframe_resets_arm_gripper_and_cube(model: mujoco.MjModel, ids: S
         data.qpos[ids.cube_qpos : ids.cube_qpos + 7],
         [*cfg.cube_xy, S.TABLE_TOP_Z + cfg.cube_size / 2, 1, 0, 0, 0],
     )
+    np.testing.assert_allclose(data.ctrl, [0.0] * 8)  # the gripper motor starts with no force
+    servo = S.build_scene(S.SceneConfig(gripper="servo"))
+    data = mujoco.MjData(servo)
+    S.reset_to_home(servo, data)
     np.testing.assert_allclose(data.ctrl, [0.0] * 7 + [S.GRIPPER_OPEN_CTRL])
 
 
@@ -504,6 +588,8 @@ def test_place_cube_rejects_non_finite_pose(model: mujoco.MjModel) -> None:
         {"cube_rgba": (1.0, 0.0, 0.0)},
         {"cube_rgba": (1.0, 0.0, 0.0, math.nan)},
         {"cube_rgba": "abcd"},
+        {"gripper": "vacuum"},
+        {"gripper": None},
     ],
 )
 def test_scene_config_rejects_bad_values(kwargs) -> None:
@@ -564,7 +650,7 @@ def test_scene_config_accepts_a_cube_footprint_touching_the_table_edge() -> None
 
 
 def test_touch_sensors_match_the_contact_helper_during_a_squeeze() -> None:
-    model = S.build_scene()
+    model = S.build_scene(S.SceneConfig(gripper="servo"))  # ctrl 0 closes the servo
     ids = S.scene_ids(model)
     data = mujoco.MjData(model)
     S.reset_to_home(model, data)
@@ -604,7 +690,7 @@ def test_touch_sensors_match_the_contact_helper_during_a_squeeze() -> None:
 
 def test_touch_counts_any_object_but_the_helper_counts_only_the_cube() -> None:
     """Touch counts pad contacts with any object; finger_cube_forces counts only the cube."""
-    spec = S.build_spec()
+    spec = S.build_spec(S.SceneConfig(gripper="servo"))  # ctrl 0 closes the servo
     other = spec.worldbody.add_body(name="other", pos=[0.5, 0.4, 0.3])
     other.add_freejoint()
     other.add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.025] * 3, mass=0.1)

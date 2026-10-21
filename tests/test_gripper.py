@@ -1,9 +1,10 @@
-"""T03: gripper interface (``open``, ``close(width)``, ``squeeze(force_n)``, ``width``).
+"""T03/T05: gripper interface (``open``, ``close(width)``, ``squeeze(force_n, speed)``, ``width``).
 
 Pins the force mapping documented in ``vfa/control/gripper.py``: a squeeze
 request lands on the cube as that normal force per finger, the menagerie servo
-caps it at 25·width N, and the same class works unchanged when T05 swaps the
-servo for a force ``motor``.
+(``SceneConfig(gripper="servo")``) caps it at 25·width N, and the same class
+drives the force motor that T05 made the scene default. T05 adds the closing
+speed (``squeeze(f, speed=v)``) and the end stop.
 """
 
 from __future__ import annotations
@@ -14,14 +15,26 @@ import mujoco
 import numpy as np
 import pytest
 
+from vfa.control import gripper as G
 from vfa.control import osc as O
 from vfa.control.gripper import Gripper, GripperCommand
 from vfa.sim import scene as S
 
+SERVO = S.SceneConfig(gripper="servo")
+
+
+def _servo_model() -> mujoco.MjModel:
+    """The scene with the pristine menagerie gripper servo (the T02/T03 default)."""
+    return S.build_scene(SERVO)
+
+
+def _model(kind: str) -> mujoco.MjModel:
+    return S.build_scene(S.SceneConfig(gripper=kind))
+
 
 def _motor_model(ctrl_limit: float = 100.0, gear: float = 1.0) -> mujoco.MjModel:
-    """The scene with actuator8 turned into a force motor (ctrl = tendon force, ±100 N)."""
-    spec = S.build_spec()
+    """A force motor on the tendon with a custom ctrl range or gear (force range ±100 N)."""
+    spec = S.build_spec(SERVO)
     act = spec.actuator(S.GRIPPER_ACTUATOR)
     act.set_to_motor()
     act.ctrlrange = [-ctrl_limit, ctrl_limit]
@@ -50,9 +63,13 @@ def _settle(model, data, osc, gripper, seconds=0.8) -> None:
     mujoco.mj_forward(model, data)
 
 
+KINDS = pytest.mark.parametrize("kind", ["servo", "motor"])
+
+
+@KINDS
 @pytest.mark.parametrize("force", [0.25, 0.5, 1.0, 1.2])
-def test_squeeze_puts_the_requested_force_on_the_cube(force: float) -> None:
-    model = S.build_scene()
+def test_squeeze_puts_the_requested_force_on_the_cube(kind: str, force: float) -> None:
+    model = _model(kind)
     ids, data, osc, gripper = _floating_cube(model)
     gripper.squeeze(force)
     _settle(model, data, osc, gripper)
@@ -67,7 +84,7 @@ def test_squeeze_puts_the_requested_force_on_the_cube(force: float) -> None:
 
 def test_squeeze_saturates_at_the_servo_cap() -> None:
     """Menagerie servo: the ctrl floor caps the squeeze at 25·width N per finger."""
-    model = S.build_scene()
+    model = _servo_model()
     ids, data, osc, gripper = _floating_cube(model)
     gripper.squeeze(5.0)
     _settle(model, data, osc, gripper)
@@ -80,8 +97,10 @@ def test_squeeze_saturates_at_the_servo_cap() -> None:
         assert f == pytest.approx(cap, rel=1e-3)
 
 
-def test_close_on_the_cube_squeezes_by_the_servo_stiffness() -> None:
-    model = S.build_scene()
+@KINDS
+def test_close_on_the_cube_squeezes_by_the_servo_stiffness(kind: str) -> None:
+    """The motor emulates the servo's 100 N/m, so both squeeze by 25·(w − w*)."""
+    model = _model(kind)
     ids, data, osc, gripper = _floating_cube(model)
     gripper.close(0.04)  # 1 cm narrower than the cube
     _settle(model, data, osc, gripper)
@@ -93,7 +112,7 @@ def test_close_on_the_cube_squeezes_by_the_servo_stiffness() -> None:
 
 @pytest.mark.parametrize("motor", [False, True], ids=["servo", "motor"])
 def test_close_and_open_track_the_width_without_an_object(motor: bool) -> None:
-    model = _motor_model() if motor else S.build_scene()
+    model = S.build_scene() if motor else _servo_model()
     ids = S.scene_ids(model)
     data = mujoco.MjData(model)
     S.reset_to_home(model, data)
@@ -113,7 +132,7 @@ def test_close_and_open_track_the_width_without_an_object(motor: bool) -> None:
 
 
 def test_servo_position_command_is_the_native_menagerie_ctrl() -> None:
-    model = S.build_scene()
+    model = _servo_model()
     data = mujoco.MjData(model)
     S.reset_to_home(model, data)
     gripper = Gripper(model, data)
@@ -127,7 +146,7 @@ def test_servo_position_command_is_the_native_menagerie_ctrl() -> None:
 
 @pytest.mark.parametrize("force", [2.0, 10.0, 20.0, 45.0])
 def test_force_motor_reaches_forces_the_servo_cannot(force: float) -> None:
-    model = _motor_model()
+    model = S.build_scene()  # T05: the scene default
     ids, data, osc, gripper = _floating_cube(model)
     assert gripper.max_squeeze_force() == pytest.approx(50.0)  # 100 N tendon / 2 fingers
     gripper.squeeze(force)
@@ -138,7 +157,7 @@ def test_force_motor_reaches_forces_the_servo_cannot(force: float) -> None:
 
 
 def test_force_motor_squeeze_saturates_at_the_force_range() -> None:
-    model = _motor_model()
+    model = S.build_scene()
     ids, data, osc, gripper = _floating_cube(model)
     gripper.squeeze(80.0)
     _settle(model, data, osc, gripper, 0.4)
@@ -148,12 +167,25 @@ def test_force_motor_squeeze_saturates_at_the_force_range() -> None:
 
 
 def test_max_squeeze_force_scales_with_width() -> None:
-    model = S.build_scene()
+    model = _servo_model()
     data = mujoco.MjData(model)
     S.reset_to_home(model, data)
     gripper = Gripper(model, data)
     for width in (0.0, 0.02, 0.05, 0.08):
         assert gripper.max_squeeze_force(width) == pytest.approx(25.0 * width, abs=1e-9)
+
+
+def test_motor_max_squeeze_force_follows_the_end_stop() -> None:
+    """Full 50 N per finger from 3 cm up; linear down to 0 at the 5 mm stop."""
+    model = S.build_scene()
+    data = mujoco.MjData(model)
+    S.reset_to_home(model, data)
+    gripper = Gripper(model, data)
+    lo = G.END_STOP_WIDTH
+    full = G.END_STOP_WIDTH + G.END_STOP_BAND
+    assert full == pytest.approx(0.03)
+    for width, expected in ((0.0, 0.0), (lo, 0.0), (0.0175, 25.0), (full, 50.0), (0.08, 50.0)):
+        assert gripper.max_squeeze_force(width) == pytest.approx(expected, abs=1e-9), width
 
 
 def test_gripper_rejects_bad_commands_without_changing_state() -> None:
@@ -178,6 +210,12 @@ def test_gripper_rejects_bad_commands_without_changing_state() -> None:
             call(arg)
         assert gripper.command == before
         np.testing.assert_array_equal(data.ctrl, ctrl)
+    bad_speeds = (0.0, 5e-324, 0.5 * G.MIN_CLOSE_SPEED, -0.1, G.MAX_CLOSE_SPEED + 0.01)
+    for speed in (*bad_speeds, math.nan, math.inf, True, "0.1"):
+        with pytest.raises(ValueError):
+            gripper.squeeze(1.0, speed=speed)  # type: ignore[arg-type]
+        assert gripper.command == before
+        np.testing.assert_array_equal(data.ctrl, ctrl)
     with pytest.raises(ValueError):
         gripper.max_squeeze_force(math.nan)
 
@@ -197,7 +235,7 @@ def test_gripper_rejects_an_unsupported_actuator() -> None:
 @pytest.mark.parametrize("motor", [False, True], ids=["servo", "motor"])
 def test_apply_solves_the_actuator_line_while_the_fingers_move(motor: bool) -> None:
     """ctrl = (F* − b0 − b1·L − b2·L̇)/g with F* carrying the servo damping −kd·L̇."""
-    model = _motor_model() if motor else S.build_scene()
+    model = S.build_scene() if motor else _servo_model()
     ids = S.scene_ids(model)
     data = mujoco.MjData(model)
     S.reset_to_home(model, data)
@@ -239,9 +277,10 @@ def test_force_range_clips_before_the_ctrl_range() -> None:
     assert gripper.saturated and math.isfinite(data.ctrl[ids.gripper_actuator])
 
 
-def test_squeeze_from_open_overshoots_then_settles_on_the_request() -> None:
-    """Pins the documented closing transient: no closing-speed limit in squeeze()."""
-    model = S.build_scene()
+@KINDS
+def test_squeeze_from_open_overshoots_then_settles_on_the_request(kind: str) -> None:
+    """Pins the documented closing transient: no closing-speed limit in squeeze(f)."""
+    model = _model(kind)
     ids, data, osc, gripper = _floating_cube(model)
     gripper.squeeze(1.0)
     peak = 0.0
@@ -303,7 +342,7 @@ def test_command_is_read_only() -> None:
 
 
 def test_gripper_reads_a_custom_servo_and_an_unlimited_motor() -> None:
-    spec = S.build_spec()
+    spec = S.build_spec(SERVO)
     act = spec.actuator(S.GRIPPER_ACTUATOR)
     act.gainprm[0] = 0.04 * 200.0 / 255.0  # a 200 N/m, 20 N·s/m servo, same ctrl mapping
     act.biasprm[:3] = [0.0, -200.0, -20.0]
@@ -323,7 +362,8 @@ def test_gripper_reads_a_custom_servo_and_an_unlimited_motor() -> None:
     act.forcelimited = mujoco.mjtLimited.mjLIMITED_FALSE
     model = spec.compile()
     ids, data, osc, gripper = _floating_cube(model)
-    assert gripper.max_squeeze_force() == math.inf
+    # No force limit: the cap is the largest accepted request (the end stop scale).
+    assert gripper.max_squeeze_force() == pytest.approx(G.MAX_SQUEEZE_N)
     gripper.squeeze(30.0)
     _settle(model, data, osc, gripper)
     for f in S.finger_cube_forces(model, data, ids):
@@ -332,7 +372,7 @@ def test_gripper_reads_a_custom_servo_and_an_unlimited_motor() -> None:
 
 
 def test_max_squeeze_force_clamps_a_slightly_out_of_range_current_width() -> None:
-    model = S.build_scene()
+    model = _servo_model()
     ids = S.scene_ids(model)
     data = mujoco.MjData(model)
     S.reset_to_home(model, data)
@@ -346,7 +386,7 @@ def test_max_squeeze_force_clamps_a_slightly_out_of_range_current_width() -> Non
 def test_gripper_follows_the_model_tendon_coupling() -> None:
     """Regression (T03 review): the width and cap math hard-coded the coupling c = 0.5.
     With c = 1, close(0.04) settled at 0.020 m and max_squeeze_force(0.05) said 2.5 N."""
-    model = S.build_scene()
+    model = _servo_model()
     ids = S.scene_ids(model)
     tendon = int(model.actuator_trnid[ids.gripper_actuator, 0])
     adr = int(model.tendon_adr[tendon])
@@ -366,3 +406,318 @@ def test_gripper_follows_the_model_tendon_coupling() -> None:
     for f in S.finger_cube_forces(model, data, ids):
         assert f == pytest.approx(2.0, rel=1e-3)
     assert not gripper.saturated
+
+
+# ------------------------------------------------- T05: closing speed and end stop
+
+
+def _free_gripper(model: mujoco.MjModel, control_hz: float = O.CONTROL_HZ):
+    """Home pose, cube far away: the fingers close on nothing."""
+    ids = S.scene_ids(model)
+    data = mujoco.MjData(model)
+    S.reset_to_home(model, data)
+    S.place_cube(model, data, 0.2, 0.6)
+    osc = O.OperationalSpaceController(model, data, ids=ids, control_hz=control_hz)
+    return ids, data, osc, Gripper(model, data, ids)
+
+
+def _run_ticks(model, data, osc, gripper, seconds: float, control_hz: float = O.CONTROL_HZ):
+    substeps = O.substeps_for(model, control_hz)
+    widths = []
+    for _ in range(round(seconds * control_hz)):
+        O.control_step(model, data, [osc, gripper], substeps)
+        widths.append(gripper.width())
+    mujoco.mj_forward(model, data)
+    return np.array(widths)
+
+
+@pytest.mark.parametrize("speed", [0.02, 0.1, 0.5])
+def test_squeeze_with_speed_closes_at_that_speed(speed: float) -> None:
+    """The bumpless start accelerates the fingers smoothly up to `speed`, never past it."""
+    model = S.build_scene()
+    ids, data, osc, gripper = _free_gripper(model)
+    gripper.squeeze(20.0, speed=speed)
+    widths = [gripper.width()]
+    while widths[-1] > G.END_STOP_WIDTH + G.END_STOP_BAND + 0.001:  # above the band
+        O.control_step(model, data, [osc, gripper], 1)
+        widths.append(gripper.width())
+        assert len(widths) < 5 * O.CONTROL_HZ
+    rate = -np.diff(widths) * O.CONTROL_HZ
+    assert rate.max() < 1.02 * speed, rate.max()
+    assert rate[-1] > 0.97 * speed, rate[-1]
+    assert not gripper.saturated
+
+
+@pytest.mark.parametrize("speed", [0.05, 0.4])
+@pytest.mark.parametrize("force", [3.0, 20.0])
+def test_squeeze_with_speed_settles_on_the_request(speed: float, force: float) -> None:
+    model = S.build_scene()
+    ids, data, osc, gripper = _floating_cube(model)
+    gripper.squeeze(force, speed=speed)
+    assert gripper.command == GripperCommand("force", force, speed)
+    _settle(model, data, osc, gripper, 0.015 / speed + force / (250.0 * speed) + 0.6)
+    for f in S.finger_cube_forces(model, data, ids):
+        assert f == pytest.approx(force, rel=1e-3)
+    assert gripper.actuator_squeeze() == pytest.approx(force, rel=1e-3)
+    assert not gripper.saturated
+
+
+def test_in_contact_the_squeeze_ramps_at_250_speed_newtons_per_second() -> None:
+    """TRACK_KP·c² = 250: the target runs ahead of the blocked fingers at `speed`."""
+    model = S.build_scene()
+    ids, data, osc, gripper = _floating_cube(model)
+    gripper.close(0.054)  # 2 mm clearance per side
+    _settle(model, data, osc, gripper, 0.5)
+    speed, force = 0.02, 8.0
+    gripper.squeeze(force, speed=speed)
+    trace = []
+    for _ in range(round(2.0 * O.CONTROL_HZ)):
+        O.control_step(model, data, [osc, gripper], 1)
+        mujoco.mj_forward(model, data)
+        trace.append((float(data.time), gripper.actuator_squeeze()))
+    t, f = np.array(trace).T
+    mid = (f > 2.0) & (f < 6.0)  # well inside the ramp
+    slope = np.polyfit(t[mid], f[mid], 1)[0]
+    assert slope == pytest.approx(G.TRACK_KP * 0.25 * speed, rel=0.05), slope
+    assert f[-1] == pytest.approx(force, rel=1e-3)
+
+
+def test_a_stronger_squeeze_ramps_up_from_the_current_force() -> None:
+    """Probe → squeeze: the new target starts at the applied force, so the grip never dips."""
+    model = S.build_scene()
+    ids, data, osc, gripper = _floating_cube(model)
+    gripper.squeeze(2.0, speed=0.05)
+    _settle(model, data, osc, gripper, 0.8)
+    assert sum(S.finger_cube_forces(model, data, ids)) == pytest.approx(4.0, rel=1e-3)
+    gripper.squeeze(6.0, speed=0.05)
+    low = math.inf
+    for _ in range(round(1.0 * O.CONTROL_HZ)):
+        O.control_step(model, data, [osc, gripper], 1)
+        mujoco.mj_forward(model, data)
+        low = min(low, sum(S.finger_cube_forces(model, data, ids)))
+    assert low > 0.99 * 4.0, low
+    assert sum(S.finger_cube_forces(model, data, ids)) == pytest.approx(12.0, rel=1e-3)
+    gripper.squeeze(1.0, speed=0.05)  # a weaker request applies at once
+    _settle(model, data, osc, gripper, 0.5)
+    assert sum(S.finger_cube_forces(model, data, ids)) == pytest.approx(2.0, rel=1e-3)
+
+
+def test_a_lost_object_leaves_a_bounded_target_and_the_end_stop_catches_the_fingers() -> None:
+    """Anti-windup: a long hold does not wind the target up past the full squeeze.
+
+    After the object is gone the fingers close under at most that squeeze (the
+    target leads by f/(c·TRACK_KP) = 40 mm of tendon at 20 N), and the end stop
+    brakes them to rest above the stop.
+    """
+    model = S.build_scene()
+    ids, data, osc, gripper = _floating_cube(model)
+    force = 20.0
+    gripper.squeeze(force, speed=0.05)
+    _settle(model, data, osc, gripper, 3.0)
+    lead = float(data.ten_length[0]) - gripper._track_length
+    assert lead == pytest.approx(force / 0.5 / G.TRACK_KP + G._TRACK_SLACK, rel=1e-3)
+    q = ids.cube_qpos
+    data.qpos[q : q + 3] = (0.2, 0.6, 0.3)  # the cube vanishes from the grasp
+    data.qvel[ids.cube_dof : ids.cube_dof + 6] = 0.0
+    mujoco.mj_forward(model, data)
+    widths = _run_ticks(model, data, osc, gripper, 1.0)
+    assert widths.min() > -0.001, widths.min()
+    assert 0.0 < widths[-1] < G.END_STOP_WIDTH + 0.002, widths[-1]
+
+
+@pytest.mark.parametrize("control_hz", [500, 100])
+@pytest.mark.parametrize("speed", [None, 0.5])
+@pytest.mark.parametrize("force", [5.0, 20.0, 50.0])
+def test_a_squeeze_on_nothing_stops_at_the_end_stop(control_hz, speed, force) -> None:
+    """T03 handoff: a force motor squeezing >= 5 N on nothing jammed the fingers (-11..-49 mm).
+
+    With a speed the fingers never pass the stop. Without one (T03 law, no speed
+    cap) they reach 0.8-6.7 m/s and can overrun it for a moment (the finger-finger
+    contact exclusion keeps them from jamming), then come back to rest above it.
+    """
+    model = S.build_scene()
+    ids, data, osc, gripper = _free_gripper(model, control_hz)
+    gripper.squeeze(force, speed=speed)
+    widths = _run_ticks(model, data, osc, gripper, 1.5, control_hz)
+    if speed is not None:
+        assert widths.min() > 0.0, widths.min()
+    assert widths[-1] == pytest.approx(G.END_STOP_WIDTH, abs=0.003)
+    assert gripper.saturated  # the stop caps the request
+    gripper.open()
+    _run_ticks(model, data, osc, gripper, 1.0, control_hz)
+    assert gripper.width() == pytest.approx(0.08, abs=1e-3)
+
+
+def test_speed_limited_squeeze_is_stable_at_the_100_hz_floor() -> None:
+    model = S.build_scene()
+    ids, data, _, _ = _floating_cube(model)
+    osc = O.OperationalSpaceController(model, data, ids=ids, control_hz=100)
+    gripper = Gripper(model, data, ids)
+    gripper.squeeze(10.0, speed=0.5)
+    _run_ticks(model, data, osc, gripper, 1.0, 100)
+    for f in S.finger_cube_forces(model, data, ids):
+        assert f == pytest.approx(10.0, rel=1e-3)
+
+
+@pytest.mark.parametrize("timeconst", [0.03, 0.05])
+def test_closing_speed_sets_the_peak_force_on_a_soft_cube(timeconst: float) -> None:
+    """The force profile matters (ROADMAP T05): same request, faster closing, higher peak."""
+    peaks = {}
+    for speed in (0.02, 0.5):
+        model = S.build_scene()
+        S.set_cube_solref(model, (timeconst, 1.0))
+        ids, data, osc, gripper = _floating_cube(model)
+        gripper.squeeze(2.0, speed=speed)
+        peak = 0.0
+        for _ in range(round((0.03 / speed + 0.5) * O.CONTROL_HZ)):
+            O.control_step(model, data, [osc, gripper], 1)
+            peak = max(peak, sum(S.finger_cube_forces(model, data, ids)))
+        peaks[speed] = peak / 4.0
+    assert peaks[0.02] < 1.02, peaks
+    assert peaks[0.5] > 1.15, peaks
+
+
+def _contact_trace(model, data, osc, gripper, ids, seconds: float):
+    """Per-tick (time, actuator squeeze per finger, summed finger-cube force, width)."""
+    rows = []
+    for _ in range(round(seconds * O.CONTROL_HZ)):
+        O.control_step(model, data, [osc, gripper], 1)
+        mujoco.mj_forward(model, data)
+        rows.append(
+            (
+                float(data.time),
+                gripper.actuator_squeeze(),
+                sum(S.finger_cube_forces(model, data, ids)),
+                gripper.width(),
+            )
+        )
+    return np.array(rows)
+
+
+@pytest.mark.parametrize("speed", [0.02, 0.5])
+def test_resending_the_same_squeeze_every_tick_changes_nothing(speed: float) -> None:
+    """T07 re-sends the grip action every step: the ramp must not restart."""
+    traces = []
+    for resend in (False, True):
+        model = S.build_scene()
+        ids, data, osc, gripper = _floating_cube(model)
+        gripper.squeeze(4.0, speed=speed)
+        rows = []
+        for _ in range(round((0.03 / speed + 0.5) * O.CONTROL_HZ)):
+            if resend:
+                gripper.squeeze(4.0, speed=speed)
+            O.control_step(model, data, [osc, gripper], 1)
+            rows.append(gripper.actuator_squeeze())
+        traces.append(np.array(rows))
+    np.testing.assert_allclose(traces[1], traces[0], rtol=0, atol=1e-9)
+
+
+def test_a_stronger_squeeze_continues_from_the_current_force_without_a_step() -> None:
+    """Bumpless start: in contact the new squeeze ramps at 250·v N/s from the old one."""
+    for speed in (0.05, 0.5):
+        model = S.build_scene()
+        ids, data, osc, gripper = _floating_cube(model)
+        gripper.squeeze(1.0, speed=0.05)
+        _settle(model, data, osc, gripper, 1.2)
+        gripper.squeeze(5.0, speed=speed)
+        rows = _contact_trace(model, data, osc, gripper, ids, 0.6)
+        ramp = G.TRACK_KP * 0.25 * speed  # N/s per finger
+        assert rows[0, 1] - 1.0 < 1.5 * ramp / O.CONTROL_HZ + 0.06, (speed, rows[0, 1])
+        assert rows[:, 1].max() <= 5.0 + 1e-6  # never above the request
+        rising = (rows[:, 1] > 1.5) & (rows[:, 1] < 4.5)
+        if rising.sum() > 3:
+            slope = np.polyfit(rows[rising, 0], rows[rising, 1], 1)[0]
+            assert slope == pytest.approx(ramp, rel=0.1), (speed, slope)
+        assert rows[-1, 1] == pytest.approx(5.0, rel=1e-3)
+
+
+@pytest.mark.parametrize("delay_ticks", [0, 5, 20])
+def test_switching_speed_and_force_at_contact_never_lets_go(delay_ticks: int) -> None:
+    """Round-2 review: a fast probe then a slow, stronger squeeze, sent at contact,
+    pulled the fingers open (finger force 0 N). The bumpless start keeps the force."""
+    model = S.build_scene()
+    ids, data, osc, gripper = _floating_cube(model)
+    gripper.squeeze(2.0, speed=0.5)
+    for _ in range(2 * O.CONTROL_HZ):
+        O.control_step(model, data, [osc, gripper], 1)
+        if sum(S.finger_cube_forces(model, data, ids)) > 0:
+            break
+    for _ in range(delay_ticks):
+        O.control_step(model, data, [osc, gripper], 1)
+    gripper.squeeze(10.0, speed=0.05)
+    rows = _contact_trace(model, data, osc, gripper, ids, 0.8)
+    assert rows[:, 1].min() > 0.5, rows[:, 1].min()  # the motor never pulls open
+    assert rows[:, 2].min() > 0.9 * 4.0, rows[:, 2].min()  # never below the probe's 2·2 N
+    assert rows[-1, 2] == pytest.approx(20.0, rel=1e-3)
+
+
+def test_changing_only_the_speed_keeps_the_force_continuous() -> None:
+    model = S.build_scene()
+    ids, data, osc, gripper = _floating_cube(model)
+    gripper.squeeze(30.0, speed=0.5)
+    for _ in range(80):
+        O.control_step(model, data, [osc, gripper], 1)
+    mujoco.mj_forward(model, data)
+    before = gripper.actuator_squeeze()
+    assert 3.0 < before < 27.0, before  # mid-ramp
+    gripper.squeeze(30.0, speed=0.001)
+    O.control_step(model, data, [osc, gripper], 1)
+    mujoco.mj_forward(model, data)
+    assert gripper.actuator_squeeze() == pytest.approx(before, abs=0.05)
+
+
+def test_a_gap_between_apply_calls_does_not_release_a_jump() -> None:
+    """The target advances at most 10 ms per apply(): a long gap (here data.time jumps
+    1 s, as if apply() had not run) pauses it instead of leaping the fingers ahead."""
+    model = S.build_scene()
+    ids, data, osc, gripper = _free_gripper(model)
+    speed = 0.05
+    gripper.squeeze(20.0, speed=speed)
+    _run_ticks(model, data, osc, gripper, 0.2)
+    data.time += 1.0
+    widths = _run_ticks(model, data, osc, gripper, 0.2)
+    rate = -np.diff(widths) * O.CONTROL_HZ
+    # One 10 ms target step at once: a short 19 % overshoot (uncapped: 1.25 m/s, 25x).
+    assert rate.max() < 1.3 * speed, rate.max()
+
+
+def test_a_weaker_squeeze_in_contact_drops_at_once_without_opening() -> None:
+    model = S.build_scene()
+    ids, data, osc, gripper = _floating_cube(model)
+    gripper.squeeze(20.0, speed=0.2)
+    _settle(model, data, osc, gripper, 1.0)
+    width = gripper.width()
+    gripper.squeeze(2.0, speed=0.2)
+    rows = _contact_trace(model, data, osc, gripper, ids, 0.5)
+    assert rows[:, 1].min() > 1.9  # the motor never pulls the fingers open
+    assert rows[:, 1].max() < 2.1 + 1e-6
+    assert rows[-1, 2] == pytest.approx(4.0, rel=1e-3)
+    assert rows[:, 3].max() < width + 0.002  # no opening pulse
+
+
+def test_a_reset_restarts_the_speed_target_at_the_fingers() -> None:
+    """reset_to_home moves time back; a stale target would close the fingers fast."""
+    model = S.build_scene()
+    ids, data, osc, gripper = _floating_cube(model)
+    speed = 0.1
+    gripper.squeeze(20.0, speed=speed)
+    _settle(model, data, osc, gripper, 1.5)
+    S.reset_to_home(model, data)  # fingers open again, time 0
+    S.place_cube(model, data, 0.2, 0.6)
+    osc.hold_current()
+    gripper.squeeze(20.0, speed=speed)  # the same command again keeps its target...
+    widths = _run_ticks(model, data, osc, gripper, 0.3)
+    rate = -np.diff(widths) * O.CONTROL_HZ
+    assert rate.max() < 1.05 * speed, rate.max()  # ...but the reset restarted it
+
+
+def test_without_a_speed_the_t03_law_has_no_speed_cap_above_the_band() -> None:
+    """The end-stop brake acts only inside the band (below 3 cm)."""
+    model = S.build_scene()
+    ids, data, osc, gripper = _free_gripper(model)
+    gripper.squeeze(6.0)
+    widths = _run_ticks(model, data, osc, gripper, 0.2)
+    above = widths > G.END_STOP_WIDTH + G.END_STOP_BAND
+    rate = -np.diff(widths)[above[1:]] * O.CONTROL_HZ
+    # Measured 1.77 m/s; a brake at every width held it near 0.93 m/s.
+    assert rate.max() > 1.5, rate.max()
