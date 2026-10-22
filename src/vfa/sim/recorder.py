@@ -439,6 +439,15 @@ class EpisodeRecorder:
         self._calls += 1
         self._n = i + 1
 
+    def snapshot(self) -> tuple[dict[str, np.ndarray], tuple[str, ...]]:
+        """Copies of the observable columns recorded so far, and the phase names.
+
+        For a decision in the middle of an attempt (T11's ``key_probe`` at
+        ``PROBE_DONE``); the privileged columns are left out on purpose.
+        """
+        arrays = {name: self._buf[name][: self._n].copy() for name in SENSOR_COLUMNS}
+        return arrays, tuple(self._phases)
+
     def add_events(self, events: Iterable[EventRecord]) -> None:
         self._check_open()
         clean = []
