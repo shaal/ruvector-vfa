@@ -404,6 +404,23 @@ def run_attempt(
     )
 
 
+# The T05 study's classes. T10 added ``brittle`` to configs/objects.toml; the spike
+# keeps its five classes, so its tables and chunk plans stay reproducible (the
+# class indices of the seeds below are unchanged: brittle comes last).
+T05_CLASSES: tuple[str, ...] = (
+    "light_rigid",
+    "heavy_rigid",
+    "slippery",
+    "fragile_soft",
+    "heavy_slippery",
+)
+
+
+def spike_classes(config: OB.ObjectConfig) -> tuple[str, ...]:
+    """The T05 classes of ``config``, in file order."""
+    return tuple(c for c in config.names if c in T05_CLASSES)
+
+
 def sample_spec(config: OB.ObjectConfig, cls: str, sample: int) -> OB.ObjectSpec:
     """The ``sample``-th cube of class ``cls``: same seed → same cube in every cell."""
     index = config.names.index(cls)
@@ -530,7 +547,7 @@ def harness_grip(
 def plan(profile: dict, config: OB.ObjectConfig) -> list[Chunk]:
     """Every chunk of a profile, in a fixed order (largest first for load balance)."""
     chunks: list[Chunk] = []
-    for cls in config.names:
+    for cls in spike_classes(config):
         for speed in profile["speeds"]:
             jobs = tuple(
                 (cls, k, f, speed, None)
@@ -547,7 +564,7 @@ def plan(profile: dict, config: OB.ObjectConfig) -> list[Chunk]:
         ("release", RELEASE_FRACTIONS, RELEASE_FIRST, profile["release_samples"]),
         ("margin", MARGIN_FACTORS, MARGIN_FIRST, profile["margin_samples"]),
     ):
-        for cls in config.names:
+        for cls in spike_classes(config):
             jobs = tuple(
                 (cls, k, 0.0, HARNESS_SPEED, (variant, factor))
                 for factor in factors
@@ -555,7 +572,7 @@ def plan(profile: dict, config: OB.ObjectConfig) -> list[Chunk]:
             )
             chunks.append(Chunk(f"{variant}__{cls}", "motor", variant, jobs))
     for level in range(len(NOISE_LEVELS)):
-        for cls in config.names:
+        for cls in spike_classes(config):
             jobs = tuple(
                 (cls, k, 0.0, HARNESS_SPEED, (variant, factor, level))
                 for variant, factor in NOISE_VARIANTS
@@ -568,7 +585,7 @@ def plan(profile: dict, config: OB.ObjectConfig) -> list[Chunk]:
         jobs = tuple(
             (cls, k, f, CAL_SPEED, None)
             for f in profile["cal_forces"]
-            for cls in config.names
+            for cls in spike_classes(config)
             for k in range(profile["cal_samples"])
         )
         chunks.append(Chunk(f"cal__{kind}", kind, "calibration", jobs, unbreakable=True))
@@ -799,7 +816,7 @@ def mcnemar_one_sided(b: int, c: int) -> float:
 def summarize(rows: list[dict], profile_name: str) -> tuple[str, dict]:
     """Markdown tables and a metrics dict from the attempt rows."""
     config = OB.load_object_config()
-    names = config.names
+    names = spike_classes(config)
     lines: list[str] = []
     metrics: dict = {"profile": profile_name}
     add = lines.append
@@ -1339,7 +1356,7 @@ def make_figures(rows: list[dict], out: Path) -> list[Path]:
     import matplotlib.pyplot as plt
 
     config = OB.load_object_config()
-    names = config.names
+    names = spike_classes(config)
     paths: list[Path] = []
 
     # Heat maps: success rate per class over (grip force, closing speed).

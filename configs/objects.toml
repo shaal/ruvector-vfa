@@ -72,3 +72,17 @@ size = [0.04, 0.06]
 mass = [0.5, 0.8]
 friction = [0.25, 0.40]
 softness = "stiff"
+
+# T10: a second breakable class, stiff, with a mid-force window. It needs at most
+# about 4 N per finger (0.35 kg at mu 0.45 lifted at 1 m/s^2) and breaks at 6-10 N
+# per finger, so a grip that holds the heavy classes breaks it and the fragile_soft
+# grip drops it: no single grip serves both breakable classes and the heavy ones
+# (the five-class best_fixed reached 80 %, docs/RESULTS.md). At the probe grip
+# (1.5 N per finger) it always slides (m g >= 1.96 N > 2 mu F <= 1.8 N), and its
+# heft peak (about 2 mu F) lies between heavy_slippery's and heavy_rigid's.
+[classes.brittle]
+size = [0.04, 0.06]
+mass = [0.2, 0.35]
+friction = [0.45, 0.6]
+softness = "stiff"
+break_force = [12.0, 20.0]

@@ -130,7 +130,7 @@ As built in T07 (`vfa/sim/env.py`; mechanisms in its docstring): a step runs 10 
 
 If one fixed set of skill parameters works for every object, memory is pointless. The benchmark therefore draws objects from **hidden classes with conflicting force requirements**. All cubes look identical (same color; sizes overlap across classes), so vision alone cannot identify the class.
 
-Initial class table (T04 implements it; **T05 validated it in physics without changes**, `docs/FEASIBILITY.md`; T10 freezes it in `configs/objects.toml`):
+Initial class table (T04 implements it; **T05 validated it in physics without changes**, `docs/FEASIBILITY.md`; T10 freezes it in `configs/objects.toml`): **T10 added `brittle`** (last row) to widen the conflict; `docs/RESULTS.md` §3:
 
 | Class | Mass (kg) | Friction μ | Contact softness | Break force (N, summed over both fingers) | What goes wrong with a wrong θ |
 |---|---|---|---|---|---|
@@ -139,6 +139,7 @@ Initial class table (T04 implements it; **T05 validated it in physics without ch
 | `slippery` | 0.15–0.35 | 0.15–0.30 | stiff | none | needs high grip for its mass |
 | `fragile_soft` | 0.05–0.20 | 0.6–0.9 | soft | 6–12 | breaks if grip is high **or** closing is fast (force overshoot) |
 | `heavy_slippery` | 0.5–0.8 | 0.25–0.40 | stiff | none | needs the highest grip — conflicts with `fragile_soft` |
+| `brittle` (T10) | 0.20–0.35 | 0.45–0.60 | stiff | 12–20 | slides at a low grip, breaks at a high one: its mid window conflicts with both `fragile_soft` and the heavy classes |
 
 Rough required grip with two finger contacts and lift acceleration `a`: `F_min ≈ m(g + a) / (2μ)` per finger, so the summed grip is `2·F_min ≈ m(g + a)/μ`. Example: `heavy_slippery` needs up to ≈ 17 N per finger, and even its easiest cube needs a summed 12.3 N at `a = 0` (0.5 kg, μ 0.40); `fragile_soft` breaks at a summed 6–12 N (3–6 N per finger). **No single grip force satisfies both.** T05 measured it in physics: the success windows (≥ 80 % of 5 cubes, same at every closing speed) are `light_rigid` 1–30 N, `heavy_rigid` 8–30 N, `slippery` 6–30 N, `fragile_soft` 1–3 N, `heavy_slippery` 16–30 N per finger. The 5-cube edges are coarse: 6 N holds only 55 % of all `slippery` cubes (every one from 12.1 N), and 1 N holds 62 % of `fragile_soft`. T10 proves it statistically (`best_fixed` ≤ 75 % success@1). T05 handoff: the best single (force, speed) pooled over the five classes already reaches 80 % (16 N; it fails only `fragile_soft`), so T10 must widen the conflict.
 
@@ -284,6 +285,8 @@ S2.decide(key):
 
 On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so its bound dominates — the window narrows like a bisection guided by force evidence. Across situations, the memory transfers what worked for objects that *felt* similar during the probe.
 
+**T10 handoffs to T15.** A failure's force bound must come from observable signals (θ, the pad forces): the recorded `BREAK` event's `force`, the `LIFTED` event's `rise`, and the outcome's `peak_cube_force` and `rise` are ground truth and would leak the hidden break force. A policy gets only `Situation.key` from the runner, never the index or the record. Memory conditions run one seed sequentially (one chunk per seed, not the baselines' 15-situation chunks), and `CODE_FILES` in `benchmark.py` must gain `memory/` and `cognition/` so their chunks re-run after a code change.
+
 ---
 
 ## 8. Safety (T09)
@@ -317,10 +320,12 @@ On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so 
 - success@k — success within `max_attempts`.
 - attempts-to-success — mean attempts per situation; an unsolved situation counts as `max_attempts + 1`.
 - break rate, drop rate — per attempt.
-- peak-force excess — peak finger normal force minus the privileged `F_min` estimate (lower = gentler).
-- force jerk — RMS time derivative of the filtered finger normal force during `SQUEEZE` + `LIFT` (lower = smoother).
+- peak-force excess — over successful attempts: the largest summed finger normal force in SQUEEZE, LIFT, and HOLD minus the summed need `m(g + a)/μ` (`2·F_min` of §4, privileged) (lower = gentler).
+- force jerk — over successful attempts: RMS time derivative of the summed, low-passed pad force during `SQUEEZE` + `LIFT` (lower = smoother).
 
 **Protocol.** Calibration seeds (for `best_fixed`, embedding statistics, residual training) are disjoint from evaluation seeds. The benchmark (`configs/benchmark.toml` + `configs/objects.toml` + `configs/best_fixed.toml`) is frozen by hash in T10, before any memory code exists. Profile sizes come from the attempts/minute measured in T10. Results are mean ± std over 3 evaluation seeds. A held-out run freezes memory after one warm-up seed and evaluates on new situations with no writes.
+
+**As built in T10** (`vfa/experiments/benchmark.py`, `baselines.py`; numbers in `docs/RESULTS.md`). Situations come in blocks of one cube per class, each block in a seeded order; a policy sees only an opaque situation key, never the index. Each attempt resets the env with a seed from (seed, situation, attempt), so the realistic sensor noise is paired too. Runs are chunked (condition × seed × 15 situations), resumable, and keyed by a code fingerprint. With the five T04 classes one grid θ reached 0.800 success@1, so T10 added `brittle`; on the frozen six-class benchmark `best_fixed` (5 N, picked on the calibration seeds at 0.675) gives 0.650 on the evaluation seeds, while each class alone has a θ at 1.00. `random_retry` reaches 0.828 success@5 in 2.21 attempts. `quick` is two tuning seeds (500, 501) with 60 situations each; `heldout` (2000) serves T18.
 
 ---
 
@@ -388,3 +393,5 @@ runs/                     # git-ignored artifacts
 | D14 | The Gymnasium env runs MuJoCo without solver warmstart from each reset until the robot first touches the cube (T07) | the warmstart choice weighs the whole constraint problem, so the cube's class-dependent table contact shifted the moving arm's readings by round-off (about 1e-13 N); without it the observation is bit-identical across classes until contact, and contact-free ticks cost the same (≈ 116 µs); over whole scripted lifts of the five classes warmstart saves a quarter (128 vs 168 µs per tick), so it returns at the first touch |
 | D15 | A fixed touch-and-heft probe (slow close to 1.5 N, 1 cm heft, set-down whatever the load) runs before θ's squeeze; `grasp_depth` ≥ 0.4 (T08) | it is safe for every class and the same for every θ, so its features compare across attempts; at the probe grip most heavy or slippery cubes stay on the table, so T06's harness rule (a heft load under 0.15 N ends the attempt) would end every slippery and heavy_slippery attempt (80 of 80, 0 of 120 for the other classes); from a shallower grasp the sliding fingers caught a small cube's top edge and the set-down broke fragile cubes (worst-case cubes: 38 of 40 at 0.30, 3 of 40 at 0.35, 0 of 80 at 0.40) |
 | D16 | The safety supervisor runs inside the env's tick loop, on by default; the commanded target must stay in the box, the measured ee may lag 3 cm past it (T09) | every policy (skill, RL, scripts) is covered without opting in, and the stop lands in the same tick; a target outside the box is a fault at once, while a tracking ee overshoots its target |
+| D17 | A sixth hidden class, `brittle` (stiff, breaks at 12–20 N summed), frozen with the benchmark (T10) | with five classes one fixed θ reached 0.800 success@1, above the 0.75 the benchmark needs; a mid-force breakable class means a high grip breaks two classes and a low grip drops the heavy ones, while every class alone stays solvable (1.00) |
+| D18 | Policies see an opaque situation key; the stratified class order is shuffled per block; `quick` is two tuning seeds with 60 situations each (T10) | the index of a stratified situation reveals its class; tuning on an evaluation seed would grade later tasks on data they were tuned on; a learning-curve half of 7 cubes (one seed of 15) is too small to show learning, and two seeds give halves of 60 |

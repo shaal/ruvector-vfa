@@ -1,0 +1,20 @@
+# best_fixed baseline θ (T10): the single grid θ with the highest success@1 on the
+# calibration seeds (vfa.experiments.benchmark calibrate). Frozen with the
+# benchmark (configs/benchmark.sha256): do not edit.
+
+[theta]
+grip_force = 5.0
+close_speed = 0.1
+lift_accel = 0.3
+grasp_depth = 0.5
+approach_speed = 0.4
+
+[calibration]
+success_at_1 = 0.675
+attempts = 120
+brittle = 1.0
+fragile_soft = 0.4
+heavy_rigid = 0.95
+heavy_slippery = 0.05
+light_rigid = 1.0
+slippery = 0.65

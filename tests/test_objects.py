@@ -23,7 +23,14 @@ from vfa.sim import objects as OB
 from vfa.sim import scene as S
 from vfa.sim import scene_check
 
-CLASS_NAMES = ("light_rigid", "heavy_rigid", "slippery", "fragile_soft", "heavy_slippery")
+CLASS_NAMES = (
+    "light_rigid",
+    "heavy_rigid",
+    "slippery",
+    "fragile_soft",
+    "heavy_slippery",
+    "brittle",  # T10
+)
 G = 9.81
 # sample_object(..., default_rng(2026)): light_rigid, then fragile_soft from the same stream.
 # (size, x, y, yaw, mass, friction, timeconst, break_force)
@@ -97,19 +104,20 @@ def _finger_cube_contacts(data: mujoco.MjData, ids: S.SceneIds) -> list[int]:
 # ------------------------------------------------------------------- the config
 
 
-def test_committed_config_has_the_five_classes_in_order(config: OB.ObjectConfig) -> None:
+def test_committed_config_has_the_six_classes_in_order(config: OB.ObjectConfig) -> None:
     assert config.names == CLASS_NAMES
     assert config.perception == OB.PerceptionNoise(0.0, 0.0)  # benchmark v1: no noise
 
 
 def test_committed_config_matches_the_architecture_table(config: OB.ObjectConfig) -> None:
-    """ARCHITECTURE §4 initial table (T05 may change both together)."""
+    """ARCHITECTURE §4 table (T05 kept it; T10 added ``brittle``)."""
     table = {
         "light_rigid": ((0.05, 0.15), (0.8, 1.0), "stiff", None),
         "heavy_rigid": ((0.6, 1.0), (0.7, 1.0), "stiff", None),
         "slippery": ((0.15, 0.35), (0.15, 0.30), "stiff", None),
         "fragile_soft": ((0.05, 0.20), (0.6, 0.9), "soft", (6.0, 12.0)),
         "heavy_slippery": ((0.5, 0.8), (0.25, 0.40), "stiff", None),
+        "brittle": ((0.2, 0.35), (0.45, 0.6), "stiff", (12.0, 20.0)),  # T10
     }
     for name, (mass, friction, softness, break_force) in table.items():
         cls = config.classes[name]

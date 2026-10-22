@@ -1,0 +1,51 @@
+# Frozen benchmark (T10, ARCHITECTURE §9). Loaded by vfa.experiments.benchmark.
+#
+# configs/benchmark.sha256 hashes this file with configs/objects.toml and
+# configs/best_fixed.toml; tests/test_benchmark_frozen.py fails if any changes.
+# Do not edit after T10 (CLAUDE.md, Frozen benchmark).
+#
+# A situation is one cube on the table. Situations come in blocks of one cube
+# per class (configs/objects.toml), in an order shuffled per block by the seed,
+# so the mix is uniform and stratified but the index does not reveal the class;
+# the cube is drawn by numpy.random.default_rng((seed, index)). Every condition
+# sees the same situations, and attempt a of a situation resets the env with the
+# same seed in every condition (a paired design). Policies see only an opaque
+# situation key, never the index (vfa/experiments/benchmark.py).
+
+[benchmark]
+task = "lift"
+max_attempts = 5          # every condition gets the same retry budget
+noise = "realistic"       # sensor noise: "none" or "realistic" (vfa.sim.sensors.REALISTIC_NOISE)
+calib_seeds = [0, 1]      # best_fixed, embedding statistics, residual training
+eval_seeds = [1000, 1001, 1002]
+
+# Profiles: which seeds and how many situations per seed. Sized from the
+# measured throughput (docs/RESULTS.md): a condition on one seed runs at most
+# 60 situations x 5 attempts, in chunks of 15 situations.
+# quick: two tuning seeds outside the evaluation and calibration seeds, for the
+# quick checks of later tasks (T15, T16, T17a). A learning curve pools its halves
+# over both seeds (60 situations each); seed 501 was fixed before any run on it.
+[profiles.quick]
+seeds = [500, 501]
+situations = 60
+
+[profiles.full]
+seeds = [1000, 1001, 1002]
+situations = 60
+
+[profiles.calib]
+seeds = [0, 1]
+situations = 60
+
+# held-out: new situations for T18's frozen-memory run (no writes).
+[profiles.heldout]
+seeds = [2000]
+situations = 60
+
+# best_fixed: one attempt per situation for every grid point on the calib
+# profile; the highest pooled success@1 wins; ties go to the lower grip, then the
+# lower lift acceleration. The other θ fields keep the naive values
+# (closing speed does not change outcomes after the probe, T08).
+[grid]
+grip_force = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0, 12.0, 15.0, 18.0, 22.0, 25.0]
+lift_accel = [0.3, 1.0]
