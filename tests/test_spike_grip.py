@@ -180,7 +180,7 @@ def test_plan_sizes_and_unique_chunk_files(config, profile, attempts) -> None:
             for cls, _, grip, speed, _ in c.jobs:
                 cells[(cls, grip, speed)] = cells.get((cls, grip, speed), 0) + 1
     assert min(cells.values()) >= 5
-    assert {k[0] for k in cells} == set(config.names)
+    assert {k[0] for k in cells} == set(SG.spike_classes(config))
 
 
 def test_the_full_held_out_cubes_were_never_used_by_another_study(config) -> None:
@@ -201,7 +201,7 @@ def test_the_full_held_out_cubes_were_never_used_by_another_study(config) -> Non
     for profile in (SG.QUICK, SG.FULL):
         assert not full_held_out & samples(profile, False)
     assert not full_held_out & samples(SG.QUICK, True)
-    assert not full_held_out & {(c, k) for c in config.names for k in range(9000, 9003)}
+    assert not full_held_out & {(c, k) for c in SG.spike_classes(config) for k in range(9000, 9003)}
 
 
 def test_wilson_interval() -> None:
@@ -256,7 +256,7 @@ def test_sweep_is_chunked_resumable_and_aggregates(tmp_path, config) -> None:
     assert not SG.run_sweep(tmp_path, profile, workers=1, deadline_s=0.0)  # nothing ran
     assert SG.run_sweep(tmp_path, profile, workers=1, deadline_s=60.0)
     files = sorted((tmp_path / "chunks").glob("*.json"))
-    assert [f.stem for f in files] == sorted(f"map__{c}__v0.5" for c in config.names)
+    assert [f.stem for f in files] == sorted(f"map__{c}__v0.5" for c in SG.spike_classes(config))
     stamps = {f: f.stat().st_mtime_ns for f in files}
     assert SG.run_sweep(tmp_path, profile, workers=1, deadline_s=60.0)  # all done: skips
     assert {f: f.stat().st_mtime_ns for f in files} == stamps

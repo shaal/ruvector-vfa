@@ -171,7 +171,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~40 min. Tests < 30 s.
   - depends: T08
 
-- [ ] **T10 — Baselines, difficulty calibration, and benchmark freeze**
+- [x] **T10 — Baselines, difficulty calibration, and benchmark freeze**
   - Goal: fix the yardstick *before* memory exists, so memory cannot be graded on a test tuned for it.
   - Deliverables:
     - Measure wall time per attempt first (median and p95, one core). Size the profiles from that number: `quick` (1 seed, 15 situations) must finish in < 3 min with workers, and every full-benchmark chunk (one condition × one seed) must finish in ≤ 9 min. Default target: 60 situations per seed (12 per class); shrink only if the measured throughput forces it. Record attempts/minute in `docs/RESULTS.md`.

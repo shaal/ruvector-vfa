@@ -1,7 +1,7 @@
 """T08: the grasp-and-lift skill with a touch-and-heft probe (``vfa.skills``).
 
 ROADMAP acceptance: with θ hand-picked from ``docs/FEASIBILITY.md`` the skill
-lifts each of the five classes in at least 8 of 10 seeds; a deliberately wrong θ
+lifts each class (five; T10 added ``brittle``) in at least 8 of 10 seeds; a deliberately wrong θ
 fails with the right failure mode (``fragile_soft`` + high force → ``BREAK``,
 ``heavy_slippery`` + low force → ``SLIP``/``DROP``); the ``PROBE_DONE`` callback
 fires exactly once per attempt and can change θ for the remaining phases.
@@ -34,7 +34,7 @@ from vfa.skills.pick import (
 from vfa.skills.reflexes import SlipReflex
 
 CONFIG = OB.load_object_config()
-CLASSES = ("light_rigid", "heavy_rigid", "slippery", "fragile_soft", "heavy_slippery")
+CLASSES = ("light_rigid", "heavy_rigid", "slippery", "fragile_soft", "heavy_slippery", "brittle")
 # θ hand-picked from docs/FEASIBILITY.md §3: a grip [N per finger] inside each
 # class's T05 window with margin over its hardest cube's need (0.97, 7.4, 12.1,
 # 1.73, 16.6 N at the T05 lift's 0.58 m/s² peak) and, for fragile_soft, a summed
@@ -45,6 +45,7 @@ HAND_PICKED = {
     "slippery": 16.0,
     "fragile_soft": 2.0,
     "heavy_slippery": 20.0,
+    "brittle": 5.0,  # T10's class: needs <= 4.1 N, breaks at >= 6 N per finger
 }
 SEEDS = range(10)
 
@@ -266,6 +267,21 @@ def test_fragile_cube_with_high_force_breaks_in_the_squeeze(seed):
     (t_break,) = events_of(r, Event.BREAK)
     assert phase_at(r, t_break) == "SQUEEZE"  # the probe itself is safe
     assert [e.kind for e in r.escalations] == [PROBE_DONE]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("seed", range(3))
+def test_brittle_cube_with_high_force_breaks_in_the_squeeze(seed):
+    r = run_attempt(
+        make_env(),
+        GraspLiftSkill(),
+        theta_for(12.0),
+        seed=seed,
+        options={"object_class": "brittle"},
+    )
+    assert r.result == "BREAK" and r.safety is None, r.result
+    (t_break,) = events_of(r, Event.BREAK)
+    assert phase_at(r, t_break) == "SQUEEZE"
 
 
 @pytest.mark.slow
