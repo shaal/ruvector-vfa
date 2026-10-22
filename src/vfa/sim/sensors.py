@@ -55,6 +55,7 @@ in ``EventDetector``'s docstring and ARCHITECTURE §4.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from collections import deque
@@ -851,15 +852,26 @@ class EventDetector:
         self.placed = False
 
     def report(self, name: Event | str, t: float, /, **info: object) -> EventRecord:
-        """Add an event raised outside the detector (``SAFETY_STOP`` from T09)."""
-        record = EventRecord(Event(name), _real("t", t), dict(info))
+        """Add an event raised outside the detector (``SAFETY_STOP`` from T09).
+
+        ``info`` must be JSON-ready (numbers, strings, lists, dicts, numpy values),
+        as the recorder stores it: anything else raises ``TypeError`` here, before
+        the event exists, so a stop request is never half delivered. The event
+        keeps a JSON copy of ``info``, so a later change to the caller's objects
+        cannot reach it.
+        """
+        try:
+            clean = json.loads(json.dumps(info, default=_json_numpy))
+        except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+            raise TypeError(f"event info must be JSON-ready ({type(exc).__name__})") from None
+        record = EventRecord(Event(name), _real("t", t), clean)
         self._emit(record)
         return record
 
     def _emit(self, record: EventRecord) -> None:
-        self.events.append(record)
         channel = "[SAFETY]" if record.name is Event.SAFETY_STOP else "[S1]"
-        details = " ".join(f"{k}={v}" for k, v in record.info.items())
+        details = " ".join(f"{k}={v}" for k, v in record.info.items())  # may raise: first
+        self.events.append(record)
         logger.info("%s event %s t=%.3f s %s", channel, record.name.value, record.t, details)
 
     def update(
@@ -977,6 +989,14 @@ class EventDetector:
             if resting and dist <= cfg.place_tolerance and _flat(priv.cube_quat, self._place_cos):
                 self.placed = True
                 self._emit(EventRecord(Event.PLACED, t, {"distance": dist}))
+
+
+def _json_numpy(value: object) -> object:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"{type(value).__name__} is not JSON-serializable")
 
 
 def _flat(quat: np.ndarray, min_cos: float) -> bool:

@@ -235,7 +235,10 @@ def test_check_env_with_render_and_frame() -> None:
 
 
 def _rollout(env_id: str, control: str, seed: int, steps: int = 50):
-    env = gym.make(env_id, control=control)
+    # Random raw torques throw the arm about: the T09 safety supervisor would stop
+    # the episode at once, so this determinism check runs without it.
+    safety = {"safety": None} if control == "torque" else {}
+    env = gym.make(env_id, control=control, **safety)
     obs, info = env.reset(seed=seed)
     env.action_space.seed(seed)
     out = [(obs, 0.0, info)]
@@ -354,8 +357,9 @@ def test_hidden_properties_stay_out_of_the_torque_observation() -> None:
         obs, _ = env.reset(seed=4, options={"object_class": cls})
         t = TorqueScript(env, obs).grip(None)
         cube = obs["cube_pos"].copy()
-        t.move(cube + (0.0, 0.0, 0.08), 0.4).move(cube + (0.1, -0.1, 0.05), 0.3).wait(0.1)
-        assert env._untouched
+        # Inside the safety box: the ee must not end the episode (T09) before the end.
+        t.move(cube + (0.0, 0.0, 0.08), 0.4).move(cube + (0.07, -0.1, 0.05), 0.3).wait(0.1)
+        assert env._untouched and not t.done
         runs[cls] = t.observations
     ref = runs[CONFIG.names[0]]
     for cls in CONFIG.names[1:]:

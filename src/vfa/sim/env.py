@@ -21,8 +21,9 @@ drives the env at control rate with ``step_hz=500``.
   ``MAX_EE_SPEED/step_hz`` (1 cm per 50 Hz step: 0.5 m/s in any direction, the
   OSC's own limit, so the OSC reference follows the target exactly). The target
   accumulates (it is the impedance spring's anchor, not an offset from the ee,
-  so a held payload does not sink step after step) and is clipped to the OSC
-  workspace ``TARGET_LOW``–``TARGET_HIGH``. Inside the step it moves on a
+  so a held payload does not sink step after step) and is clipped to the
+  target box ``TARGET_LOW``–``TARGET_HIGH`` (the OSC workspace with its near
+  face at x = 0.33, T09). Inside the step it moves on a
   straight line, tick by tick, with the step's velocity fed forward (``vel=``):
   T05 measured 7.2 mm of sideways drift on a descent without it. The hand stays
   top-down, turned to the grasp yaw: 0 for reach, the observed cube yaw for
@@ -67,7 +68,13 @@ ee's rise since the grasp closed over ``LIFT_HEIGHT`` (clipped to [0, 1]) while
 grasped, and ``SUCCESS_BONUS`` on success. Pick-and-place takes the best rise
 of the grasp instead and adds a transport term ``1 − tanh(10·‖ee_xy −
 goal_xy‖)`` during a carry; both stay through the set-down and the release, so
-placing loses no reward.
+placing loses no reward. The step a ``SAFETY_STOP`` ends costs
+``SAFETY_PENALTY`` plus, while the reward is negative (reach), that reward for
+every step left to the time limit: tripping the safety supervisor never scores
+above holding the stop pose until the time limit (the penalty does not price a
+braking path; no task here trains on these rewards). A ``BREAK`` in the same
+tick as a stop outranks it (the result is ``BREAK``, or ``PLACE_BREAK`` in a
+pick-and-place release phase; ``emergency`` keeps the stop).
 
 **Termination** (ARCHITECTURE §3 table). Reach: success when the ee stays
 within 1 cm of the goal for 0.2 s. Lift: success when the cube's center stays ≥
@@ -133,6 +140,21 @@ observable ``DROP`` ends the episode depends on ground truth (did the cube
 clear 2 cm?), as the §3 table defines it. A ``reset()`` before the episode ends
 drops its recording.
 
+**Safety** (T09, ``vfa.control.safety``). With ``safety`` set (the default
+``DEFAULT_SAFETY``), a ``SafetySupervisor`` checks every control tick after the
+reset: the commanded ee target (osc) and the measured ee against the workspace
+box, the tared wrist force and torque, the ee speed, the arm joint margins, and
+sustained torque saturation (osc: the OSC clipped its law; torque: an arm
+command at its motor limit). On the first violation the env engages the
+emergency mode: the OSC holds the current pose (in torque control the arm
+motors get the gravity compensation torques), the gripper keeps its last
+command, ``emergency`` holds the ``SafetyViolation``, and ``SAFETY_STOP`` (info:
+its reason and values) ends the episode in that tick. The observation's
+``ee_target`` stays the last commanded target (inside its box); the hold is
+``osc.target``. ``safety=None`` turns the
+supervisor off (random raw torques, for example, trip it within 1–5 steps at
+50 Hz).
+
 **Reset.** ``reset(seed, options)`` puts the arm at ``START_ARM_QPOS`` (the ee at
 ``START_POS``, top-down, at rest, inside the workspace), draws the cube
 (``options["object"]`` an ``ObjectSpec``, else ``options["object_class"]`` or
@@ -168,6 +190,7 @@ from vfa.control.osc import (
     control_step,
     substeps_for,
 )
+from vfa.control.safety import SafetyLimits, SafetySupervisor, SafetyViolation
 from vfa.sim import objects as OB
 from vfa.sim import scene as S
 from vfa.sim.recorder import RESULTS, Episode, EpisodeRecorder
@@ -198,17 +221,22 @@ TARE_S = 0.1
 MAX_EE_SPEED = 0.5  # ee target speed at |a[:3]| = 1 [m/s] (the OSC's own speed limit)
 # The ee target stays in the OSC workspace (T03: every corner reached to ≤ 3.1 mm).
 # Its floor (0.02 m, a 4 cm cube's center) keeps the fingertips about 1 cm above the
-# table. Above it the far corners stall: (0.65, ±0.3) ends 10.6 mm short at the home
+# table at rest; a full-speed descent into a far corner overshoots it about 1 cm and
+# touches. Above it the far corners stall: (0.65, ±0.3) ends 10.6 mm short at the home
 # height z = 0.521 and 17.7 mm short at z = 0.55 (3 s), so the episode does not start
-# at home.
-TARGET_LOW = np.array(WORKSPACE_LOW, dtype=float)
+# at home. Its near face is x = 0.33, not the workspace's 0.30 (T09): around (0.30, 0,
+# 0.08-0.18) joint 4 comes within the safety supervisor's 0.02 rad margin of its
+# range end (it reaches the end itself without the supervisor), and at 0.32 a
+# full-speed rise reversed into a descent still did (the ee lags 2 cm past the face);
+# at 0.33 it kept >= 0.049 rad in a review's reversal sweep.
+TARGET_LOW = np.array([0.33, WORKSPACE_LOW[1], WORKSPACE_LOW[2]])
 TARGET_HIGH = np.array(WORKSPACE_HIGH, dtype=float)
 # Start pose: the arm joints that hold the ee at START_POS, top-down, under the OSC
 # (the rest state after a 12 s OSC move from home; it drifts 1.5e-7 mm in 1 s).
 START_POS = np.array([0.55, 0.0, 0.40])
 START_ARM_QPOS: tuple[float, ...] = (0.0, -0.03493, 0.0, -1.922671, 0.0, 1.887741, -0.785398)
-# Reach goals: the OSC workspace with the floor at 10 cm, clear of any cube.
-REACH_LOW = np.array([WORKSPACE_LOW[0], WORKSPACE_LOW[1], 0.10])
+# Reach goals: the target box with the floor at 10 cm, clear of any cube.
+REACH_LOW = np.array([TARGET_LOW[0], TARGET_LOW[1], 0.10])
 REACH_HIGH = np.array(WORKSPACE_HIGH, dtype=float)
 REACH_TOLERANCE = 0.01  # m
 REACH_HOLD_S = 0.2
@@ -233,7 +261,9 @@ _WARMSTART = int(mujoco.mjtDisableBit.mjDSBL_WARMSTART)
 PRIVILEGED_EVENTS = frozenset({Event.BREAK, Event.LIFTED, Event.PLACED})
 TOPPLE_REST_S = 0.2
 GRASP_BONUS = 0.25
+DEFAULT_SAFETY = SafetyLimits()  # the env's safety limits unless safety= says otherwise
 SUCCESS_BONUS = 10.0
+SAFETY_PENALTY = 10.0  # subtracted when a SAFETY_STOP ends the episode (module doc)
 RENDER_SIZE = (480, 640)  # (height, width) of render()
 _EPS_T = 1e-9
 
@@ -259,6 +289,7 @@ class PandaVFAEnv(gym.Env):
         record: bool = True,
         record_stride: int = 1,
         render_size: tuple[int, int] = RENDER_SIZE,
+        safety: SafetyLimits | None = DEFAULT_SAFETY,
     ) -> None:
         if task not in TASKS:
             raise ValueError(f"task must be one of {TASKS}, got {task!r}")
@@ -288,6 +319,9 @@ class PandaVFAEnv(gym.Env):
             raise ValueError(f"record_stride must be an int >= 1, got {record_stride!r}")
         self.record_stride = record_stride
         self.close_speed = close_speed
+        if safety is not None and not isinstance(safety, SafetyLimits):
+            raise TypeError(f"safety must be a SafetyLimits or None, got {safety!r}")
+        self.safety = safety
 
         self.model = S.build_scene()
         self.data = mujoco.MjData(self.model)
@@ -324,6 +358,8 @@ class PandaVFAEnv(gym.Env):
         self.osc: OperationalSpaceController | None = None
         self.gripper: Gripper | None = None
         self.monitor: OB.BreakMonitor | None = None
+        self.supervisor: SafetySupervisor | None = None
+        self.emergency: SafetyViolation | None = None
         self.sensors: SensorSuite | None = None
         self.events: EventDetector | None = None
         self.recorder: EpisodeRecorder | None = None
@@ -440,6 +476,10 @@ class PandaVFAEnv(gym.Env):
         self.monitor = OB.BreakMonitor(model, data, spec, ids)
         self.sensors = SensorSuite(model, data, ids, self.sensor_config, rng=sensor_rng)
         self.events = EventDetector(self.event_config)
+        self.supervisor = None
+        if self.safety is not None:
+            self.supervisor = SafetySupervisor(model, data, ids, self.safety, self.dt)
+        self.emergency = None
         self.episode = None
         self.result = None
         self._phase_override = None
@@ -555,11 +595,15 @@ class PandaVFAEnv(gym.Env):
         # An event reported between steps (T09's SAFETY_STOP) ends the episode before
         # the new action runs.
         new_events = self._collect_events()
-        if any(e.name is Event.SAFETY_STOP for e in new_events):
+        stops = [e for e in new_events if e.name is Event.SAFETY_STOP]
+        if stops:
+            if self.emergency is None:  # reported from outside: engage the hold too
+                self._engage(_external_violation(stops[0]))
             self.result = "SAFETY_STOP"
             self._done = True
             self._finish()
-            return self._obs(), float(self._reward()), True, False, self._info(new_events)
+            # No tick ran: the step earns only the stop's cost.
+            return self._obs(), -self._stop_cost(), True, False, self._info(new_events)
 
         n = self.ticks_per_step
         if self.control == "osc":
@@ -604,6 +648,8 @@ class PandaVFAEnv(gym.Env):
         reward = self._reward()
         if terminated and self.result == "SUCCESS" and self.task != "reach":
             reward += SUCCESS_BONUS
+        elif terminated and self.result == "SAFETY_STOP":
+            reward -= self._stop_cost()
         if terminated or truncated:
             self._done = True
             self._finish()
@@ -621,6 +667,13 @@ class PandaVFAEnv(gym.Env):
             raise RuntimeError("the episode is over (or never started): call reset()")
         if result not in RESULTS:
             raise ValueError(f"result must be one of {RESULTS}, got {result!r}")
+        # Events reported since the last step reach the recorder; a pending safety
+        # stop outranks the caller's reason.
+        stops = [e for e in self._collect_events() if e.name is Event.SAFETY_STOP]
+        if stops:
+            if self.emergency is None:
+                self._engage(_external_violation(stops[0]))
+            result = "SAFETY_STOP"
         self.result = result
         self._done = True
         self._finish()
@@ -650,6 +703,8 @@ class PandaVFAEnv(gym.Env):
         elif self.sensors.slip.watching:
             self._place_started = False  # a new carry: a break now is not a place break
         self.events.update(frame, self.phase, priv)
+        if self.supervisor is not None and not self._settling and self.emergency is None:
+            self._supervise(frame)
         events = self._collect_events()  # with any reported from outside (T09)
         for e in events:
             if e.name is Event.LIFTED:
@@ -676,6 +731,40 @@ class PandaVFAEnv(gym.Env):
             self.recorder.record(frame, self.phase, priv)
         self._frame, self._priv = frame, priv
         return events
+
+    def _supervise(self, frame: SensorFrame) -> None:
+        """Run the safety checks; on a violation engage the emergency mode (module doc)."""
+        arm = self.ids.arm_actuators
+        if self.control == "osc":
+            target = np.asarray(self.osc.target.pos)
+            saturated = self.osc.saturated
+        else:
+            target = None
+            saturated = bool(np.any(np.abs(self.data.ctrl[arm]) >= self._arm_limits))
+        violation = self.supervisor.check(frame, target, saturated)
+        if violation is not None:
+            self._engage(violation)
+            self.events.report(Event.SAFETY_STOP, frame.t, **violation.info())
+
+    def _stop_cost(self) -> float:
+        """What a safety stop costs: ``SAFETY_PENALTY``, plus the rest of the time limit
+        at the current reward if it is negative (reach), so that ending an episode by a
+        stop always scores below holding the stop pose until the time limit."""
+        steps_left = max(0.0, (self.time_limit - self.elapsed) * self.step_hz)
+        return SAFETY_PENALTY - min(float(self._reward()), 0.0) * steps_left
+
+    def _engage(self, violation: SafetyViolation) -> None:
+        """The emergency mode: hold the pose, keep the gripper's command (module doc)."""
+        self.emergency = violation
+        # Hold the pose the sensors just read (one physics step old, as hold_current
+        # reads it after control_step). Torque control gets one write of the gravity
+        # compensation torques; the episode ends in this tick.
+        self.osc.hold_current()
+        if self.control == "torque":
+            arm = self.ids.arm_actuators
+            self.data.ctrl[arm] = np.clip(
+                self.data.qfrc_bias[self.ids.arm_dof], -self._arm_limits, self._arm_limits
+            )
 
     def _cube_contacts(self) -> int:
         """The cube's contacts: bit 1 with the table, bit 2 with anything else (the robot)."""
@@ -779,6 +868,8 @@ class PandaVFAEnv(gym.Env):
     def _check_terminal(self, events: list[EventRecord]) -> str | None:
         """The result if this tick ends the episode (``events``: the tick's new events)."""
         ev, frame, priv = self.events, self._frame, self._priv
+        if ev.broken and self.task != "reach":  # the outcome outranks a stop in its tick
+            return "PLACE_BREAK" if self.task == "pick_place" and self._place_started else "BREAK"
         if any(e.name is Event.SAFETY_STOP for e in events):
             return "SAFETY_STOP"
         t = frame.t
@@ -790,8 +881,6 @@ class PandaVFAEnv(gym.Env):
             if near and t - self._near_since >= REACH_HOLD_S - _EPS_T:
                 return "SUCCESS"
             return None
-        if ev.broken:
-            return "PLACE_BREAK" if self.task == "pick_place" and self._place_started else "BREAK"
         dropped = any(e.name is Event.DROP for e in events)
         lifted = ev.lifted or self._lifted_carry == frame.watch_id  # in the air, or this carry's
         if dropped and frame.watch_id > 0 and lifted:
@@ -926,6 +1015,23 @@ class PandaVFAEnv(gym.Env):
         if self._renderer is not None:
             self._renderer.close()
             self._renderer = None
+
+
+def _external_violation(event: EventRecord) -> SafetyViolation:
+    """A ``SafetyViolation`` from a ``SAFETY_STOP`` reported outside the supervisor."""
+    info = dict(event.info)
+
+    def real(key: str) -> float:
+        value = info.pop(key, math.nan)
+        try:
+            return float(value)
+        except (TypeError, ValueError, OverflowError):
+            return math.nan
+
+    reason = str(info.pop("reason", "external"))
+    value, limit = real("value"), real("limit")
+    detail = str(info.pop("detail", ""))
+    return SafetyViolation(reason, float(event.t), value, limit, detail, info)
 
 
 def _flat(quat: np.ndarray, tilt_deg: float) -> bool:
