@@ -125,7 +125,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~45 min. Tests < 20 s.
   - depends: T05
 
-- [ ] **T07 — Gymnasium environment (reach, lift, pick-and-place)**
+- [x] **T07 — Gymnasium environment (reach, lift, pick-and-place)**
   - Goal: a clean, standard interface around the scene.
   - Deliverables:
     - `vfa/sim/env.py`: `PandaVFAEnv(task, control="osc"|"torque", object_class=None, render_mode=None|"rgb_array")`.
@@ -354,6 +354,9 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
     - Place failure modes: `PLACE_BREAK` (fragile impact force), `TOPPLE` / `MISS` (outside the target tolerance).
     - Memory works on the pick-and-place keys (embeddings get place-phase force features). Add a `pick_place` benchmark profile **as a new file** `configs/benchmark_pick_place.toml` with its own hash. Do not edit the frozen lift benchmark.
     - Extend `vfa demo --task pick_place` and add a pick-and-place section to `docs/RESULTS.md`.
+    - Fix two limits that T07 left in `vfa/sim/env.py` (they shipped as known limitations because no task before T19 uses pick-and-place or torque mode). Add a regression test for each:
+      1. The place verdict latches `_touchdown_xy` at the first table graze. A heavy cube that is dragged the rest of the way while still pinched is judged "pushed" (`TIMEOUT`). Keep updating the touchdown while both pads press without a break; freeze it when the pinch breaks.
+      2. In `control="torque"` with `auto_carry`, the set-down gate (the ee sinks below the carry's peak and `load < SETDOWN_LOAD ×` the load read at that peak) passes when the reference load was a spike (lift start, sideways acceleration). The env then gives `PLACED` with the cube in the air. Replace it with a sustained-unload rule, or drop auto set-down in torque mode.
   - Acceptance:
     - Hand-picked θ places each class in ≥ 7 of 10 seeds.
     - `memory_full` beats `random_retry` on attempts-to-success on the pick-and-place quick profile. Quote the numbers.
