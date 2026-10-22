@@ -242,6 +242,7 @@ def test_hand_picked_theta_lifts_every_class_in_8_of_10_seeds():
                 options={"object_class": cls},
             )
             assert len(probes) == 1, (cls, seed, r.result)  # exactly once per attempt
+            assert r.safety is None and not r.episode.events_named(Event.SAFETY_STOP)  # T09
             assert sum(e.kind == PROBE_DONE for e in r.escalations) == 1
             results.append(r)
         table[cls] = [r.result for r in results]
@@ -261,6 +262,7 @@ def test_fragile_cube_with_high_force_breaks_in_the_squeeze(seed):
         options={"object_class": "fragile_soft"},
     )
     assert r.result == "BREAK", r.result
+    assert r.safety is None  # T09: no false safety stop
     (t_break,) = events_of(r, Event.BREAK)
     assert phase_at(r, t_break) == "SQUEEZE"  # the probe itself is safe
     assert [e.kind for e in r.escalations] == [PROBE_DONE]
@@ -279,6 +281,7 @@ def test_heavy_slippery_cube_with_low_force_slips_or_drops(seed):
         options={"object_class": "heavy_slippery"},
     )
     assert r.result in ("SLIP", "DROP"), r.result
+    assert r.safety is None  # T09: no false safety stop
     assert not events_of(r, Event.BREAK)
     assert [e.kind for e in escalations][0] == PROBE_DONE
     assert sum(e.kind == PROBE_DONE for e in escalations) == 1

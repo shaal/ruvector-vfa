@@ -56,7 +56,8 @@ speed makes a late rescue slow too.
 decisions never read ``info["privileged"]``, the object spec, or the break
 monitor.
 An attempt that the env ends keeps the env's result (``SUCCESS``, ``BREAK``,
-``DROP``, ``TIMEOUT``). One that the skill ends keeps the skill's reason for
+``DROP``, ``TIMEOUT``, or ``SAFETY_STOP`` from the env's safety supervisor, whose
+reason ``AttemptResult.safety`` carries). One that the skill ends keeps the skill's reason for
 ``MISS`` and ``DROP`` (a ``DROP`` event before the env saw a lift-off); after a
 HOLD that never succeeded, ``run_attempt`` reads ground truth for the label
 only: ``SLIP`` if the cube's center is 2 cm or more above its rest height,
@@ -187,6 +188,9 @@ class AttemptResult:
     episode: Episode | None  # None if the env does not record
     sim_s: float  # since the env reset ended
     wall_s: float
+    # The safety stop's info (reason, value, limit); also set when a BREAK in the
+    # same tick outranks the stop (result BREAK).
+    safety: dict[str, Any] | None = None
 
     @property
     def failure_mode(self) -> str | None:
@@ -572,8 +576,8 @@ def run_attempt(
     if ended:
         result = unwrapped.result
     else:
-        result = _label(unwrapped, skill.stop_reason)
-        unwrapped.end_episode(result)
+        unwrapped.end_episode(_label(unwrapped, skill.stop_reason))
+        result = unwrapped.result  # a safety stop reported meanwhile outranks the label
     logger.info("[S1] attempt %s (%s)", result, skill.stop_reason or "env")
     return AttemptResult(
         success=result == "SUCCESS",
@@ -585,6 +589,7 @@ def run_attempt(
         episode=unwrapped.episode,
         sim_s=unwrapped.elapsed,
         wall_s=time.perf_counter() - wall0,
+        safety=None if unwrapped.emergency is None else unwrapped.emergency.info(),
     )
 
 

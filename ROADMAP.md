@@ -158,7 +158,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~60 min. Slow sweep < 8 min.
   - depends: T07
 
-- [ ] **T09 — Safety supervisor and emergency stop**
+- [x] **T09 — Safety supervisor and emergency stop**
   - Goal: a hard override above both systems.
   - Deliverables:
     - `vfa/control/safety.py`: `SafetySupervisor` checked every control tick: wrist force/torque limits, EE workspace box, EE speed cap, joint-limit margin, sustained torque saturation.
