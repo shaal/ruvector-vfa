@@ -142,7 +142,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~45 min. Tests < 30 s.
   - depends: T06
 
-- [ ] **T08 — Parameterized grasp-and-lift skill with touch-and-heft probe (System 1)**
+- [x] **T08 — Parameterized grasp-and-lift skill with touch-and-heft probe (System 1)**
   - Goal: the fast reactive executor that System 2 will tune.
   - Deliverables:
     - `vfa/skills/params.py`: `SkillParams` (θ) — `grip_force`, `close_speed`, `lift_accel`, `grasp_depth`, `approach_speed` — with bounds, `to_vector()`/`from_vector()`, and a JSON form.

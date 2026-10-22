@@ -170,7 +170,7 @@ from vfa.control.osc import (
 )
 from vfa.sim import objects as OB
 from vfa.sim import scene as S
-from vfa.sim.recorder import Episode, EpisodeRecorder
+from vfa.sim.recorder import RESULTS, Episode, EpisodeRecorder
 from vfa.sim.sensors import (
     Event,
     EventConfig,
@@ -608,6 +608,22 @@ class PandaVFAEnv(gym.Env):
             self._done = True
             self._finish()
         return self._obs(), float(reward), terminated, truncated, self._info(new_events)
+
+    def end_episode(self, result: str) -> None:
+        """End the episode now with ``result`` (one of ``recorder.RESULTS``).
+
+        For an agent that stops on its own: T08's skill ends an attempt after a
+        ``DROP`` the env does not end on (no lift-off yet), a ``MISS``, or a hold
+        that never succeeded. The recorder finishes as at a termination
+        (``episode``), and ``step`` raises until the next ``reset``.
+        """
+        if self._done:
+            raise RuntimeError("the episode is over (or never started): call reset()")
+        if result not in RESULTS:
+            raise ValueError(f"result must be one of {RESULTS}, got {result!r}")
+        self.result = result
+        self._done = True
+        self._finish()
 
     @property
     def elapsed(self) -> float:
