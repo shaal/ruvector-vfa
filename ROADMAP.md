@@ -194,7 +194,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
 
 ## Phase C — RuVector-inspired memory
 
-- [ ] **T11 — Force / trajectory / context embeddings**
+- [x] **T11 — Force / trajectory / context embeddings**
   - Goal: turn an episode into vectors where "similar physics" means "nearby".
   - Deliverables:
     - `vfa/memory/embeddings.py`, per `docs/ARCHITECTURE.md` §5:

@@ -204,15 +204,17 @@ The memory stores **what was available at each decision point**, not only the fi
 | `key_pre` | context: observed cube pose and size, initial joint config | attempt start |
 | `key_probe` | context + probe force features | after `PROBE_DONE` |
 | `key_retry` | context + previous attempt's full force profile + its failure mode one-hot | retry after a failure |
-| `full_embedding` | context + force + trajectory + outcome | consolidation, analysis |
+| `full_embedding` | context + probe + force + trajectory + outcome | consolidation, analysis |
 
 Feature groups:
 
 - **Force** — per phase, resample the tared wrist wrench (Fz, ‖Fxy‖, ‖τ‖) and the summed finger normal force to a fixed length (default 16 samples). Add key moments: contact-onset time, peak force, closure-force slope, heft load, slip-event count.
 - **Trajectory** — EE path relative to the object (16 points × 3) and a speed profile (16).
-- **Context** — observed cube position (3), size (1), initial joint positions (7).
+- **Context** — observed cube position (3), yaw (1), size (1), initial joint positions (7).
 
 Each group is standardized with statistics fitted on the committed calibration fixture `tests/fixtures/calib_episodes.npz` (saved to `configs/embedding_stats.npz`), multiplied by a group weight, concatenated, and **L2-normalized**. Unit vectors make dot product equal to cosine similarity, which matches the Rust crate's dot-product recall (§10).
+
+**As built in T11** (`vfa/memory/embeddings.py`; groups and dimensions in its docstring). Every key reads an `EpisodeView`: the observable signals at 50 Hz, the observed context (with yaw), the probe features, θ, and the outcome, built the same way from a finished episode, from the recorder at `PROBE_DONE` (`EpisodeRecorder.snapshot`, observable columns only), or from the fixture. Dimensions: `key_pre` 12, `key_probe` 50, `key_retry` 213, `full_embedding` 354. Channels that carry no object information by construction stay out of `key_probe`: the probe's torque (pose) and pad force (the commanded probe force); `key_retry` also leaves out the post-probe pad force, which follows the commanded grip. Standardized features are clipped at ±5. Weights: context 0.5, probe scalars 2 (they separate the classes whose grips conflict far better than the profile), the rest 1. On the fixture, same-class minus cross-class mean cosine is 0.839 for `key_probe` and −0.006 for `key_pre`.
 
 ### 5.2 Tiers (T12, T13)
 
@@ -285,7 +287,7 @@ S2.decide(key):
 
 On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so its bound dominates — the window narrows like a bisection guided by force evidence. Across situations, the memory transfers what worked for objects that *felt* similar during the probe.
 
-**T10 handoffs to T15.** A failure's force bound must come from observable signals (θ, the pad forces): the recorded `BREAK` event's `force`, the `LIFTED` event's `rise`, and the outcome's `peak_cube_force` and `rise` are ground truth and would leak the hidden break force. A policy gets only `Situation.key` from the runner, never the index or the record. Memory conditions run one seed sequentially (one chunk per seed, not the baselines' 15-situation chunks), and `CODE_FILES` in `benchmark.py` must gain `memory/` and `cognition/` so their chunks re-run after a code change.
+**T10 handoffs to T15.** A failure's force bound must come from observable signals (θ, the pad forces): the recorded `BREAK` event's `force`, the `LIFTED` event's `rise`, and the outcome's `peak_cube_force` and `rise` are ground truth and would leak the hidden break force. A policy gets only `Situation.key` from the runner, never the index or the record. Memory conditions run one seed sequentially (one chunk per seed, not the baselines' 15-situation chunks), and `CODE_FILES` in `benchmark.py` must gain `memory/` and `cognition/` so their chunks re-run after a code change. From T11: similarities are not comparable across keys (`key_pre` ranks every cube of a size and pose alike, so its hits say nothing about the class); `key_retry` ranks by failure type, and a failed attempt's post-probe wrist profile resembles no success's, so on a retry the success neighbours should come from the failed attempt's `key_probe` and the failure neighbours from `key_retry`. The probe only barely separates `slippery` from `heavy_slippery` (a high grip serves both) and `fragile_soft` from `light_rigid` (a high grip breaks the first), so T13's clusters may merge such pairs; clustering with more clusters than classes, and restarts, keeps them apart better.
 
 ---
 

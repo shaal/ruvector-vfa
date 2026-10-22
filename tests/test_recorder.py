@@ -152,6 +152,19 @@ def test_synthetic_episode_round_trips_with_nans_strides_and_growth(tmp_path) ->
     assert set(PRIVILEGED_COLUMNS) <= set(ep.arrays)
 
 
+def test_snapshot_copies_the_observable_rows_so_far() -> None:
+    """T11: a mid-attempt view (``snapshot``) holds no privileged column."""
+    rec = EpisodeRecorder(capacity=2)
+    for k in range(5):
+        rec.record(_frame(0.002 * (k + 1), k), "A" if k < 3 else "B", _priv(k))
+    arrays, phases = rec.snapshot()
+    assert phases == ("A", "B")
+    assert not set(PRIVILEGED_COLUMNS) & set(arrays)
+    assert all(len(v) == 5 for v in arrays.values())
+    arrays["t"][0] = -1.0  # a copy: the recorder is unchanged
+    assert rec.finish("SUCCESS").arrays["t"][0] == pytest.approx(0.002)
+
+
 def test_recorder_rejects_bad_use(tmp_path) -> None:
     rec = EpisodeRecorder()
     with pytest.raises(ValueError, match="phase"):
