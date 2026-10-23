@@ -63,6 +63,24 @@ their similarity, result, and grip); the handoff log keeps it (T17's plots).
 With ``keys="context"`` (``memory_ctx_only``, the force ablation) every key is
 the context key ``key_pre``.
 
+**Component ablations** (T18; constructor flags, each on by default):
+``reinforce=False`` never reinforces, so every utility stays 0.5 and ranking is
+by similarity alone; ``semantic=False`` never consolidates and never asks the
+skill library, so the center comes from episodic hits only; ``failure_bounds=
+False`` sets no bound from any failure (this cube's own or a neighbour's), so
+the window stays at the ``SkillParams`` bounds and a retry without a success
+neighbour repeats the default grip; ``probe_trigger=False`` keeps θ at
+``PROBE`` and makes the whole proposal at ``FAILURE`` instead, from the failed
+attempt's ``key_probe`` (its own failures only, after a probe-less ``MISS``);
+``START`` keeps the default θ as always, so a first attempt runs ``naive``'s θ
+until a slip escalation, which raises the grip toward 25 N (no probe window
+caps it, unlike in ``memory_full``).
+
+**Frozen memory** (``freeze()``, T18's held-out run): nothing is stored,
+reinforced, or consolidated any more. The attempts at the current cube go to
+a per-situation scratch instead (the role of ``WorkingMemory``), cleared at the
+next ``begin_situation``, so a retry is still bounded by this cube's failures.
+
 The thresholds were set before the first benchmark run on the ``quick``
 profile, which T10 keeps for tuning. On the calibration fixture's 243 probed
 attempts, the best same-class ``key_probe`` neighbour from another cube is at
@@ -241,6 +259,10 @@ class RetrievalPolicy:
         keys: str = "full",
         embedder: Embedder | None = None,
         theta: SkillParams = DEFAULT_THETA,
+        reinforce: bool = True,
+        semantic: bool = True,
+        probe_trigger: bool = True,
+        failure_bounds: bool = True,
     ) -> None:
         if keys not in KEY_MODES:
             raise ValueError(f"keys must be one of {KEY_MODES}, got {keys!r}")
@@ -252,6 +274,12 @@ class RetrievalPolicy:
         self.keys = keys
         self.embedder = Embedder() if embedder is None else embedder
         self.theta = theta
+        self.reinforce = reinforce
+        self.semantic = semantic
+        self.probe_trigger = probe_trigger
+        self.failure_bounds = failure_bounds
+        self.frozen = False
+        self.scratch: list[EpisodeRecord] = []  # this cube's attempts while frozen
         self.situation: int | None = None
         self.attempt = 0
         self.situations = 0
@@ -280,12 +308,20 @@ class RetrievalPolicy:
             return Decision(self.theta, START, f"default θ; key_pre {_hits(hits)}")
         if percept.source == FAILURE:
             previous: ObservedAttempt = percept.data["previous"]
+            if not self.probe_trigger:  # the whole proposal, one attempt late
+                view = previous.view
+                query = None
+                if view is not None and view.probe is not None:
+                    query = self.key("key_probe", view)
+                return self.propose(query, theta, FAILURE)
             hits = []
             if previous.view is not None:
                 hits = self._recall("key_retry", self.key("key_retry", previous.view), False)
             self._window = None
             return Decision(self.theta, FAILURE, f"default θ; key_retry {_hits(hits)}")
         if percept.source == PROBE:
+            if not self.probe_trigger:
+                return Decision(theta, PROBE, "keep θ: no decision at the probe")
             return self._probe(percept, theta)
         if percept.source == ESCALATION:
             return self._escalation(theta)
@@ -297,8 +333,11 @@ class RetrievalPolicy:
             raise ValueError(NO_RECORDER)
         return self.propose(self.key("key_probe", view), theta)
 
-    def propose(self, query: np.ndarray | None, theta: SkillParams) -> Decision:
-        """The probe decision for the ``key_probe`` vector ``query`` (None: no view)."""
+    def propose(
+        self, query: np.ndarray | None, theta: SkillParams, trigger: str = PROBE
+    ) -> Decision:
+        """The probe decision for the ``key_probe`` vector ``query`` (None: no view);
+        ``trigger`` names the decision point (``FAILURE`` without the probe trigger)."""
         own = self._own_failures()
         successes, failures, semantic = [], [], None
         if query is not None and len(self.memory.episodic):
@@ -306,7 +345,10 @@ class RetrievalPolicy:
             failures = self._recall("key_probe", query, False, strong=True)
             if not successes:
                 semantic = self._skill(query)
-        window = grip_window(own + failures, own=len(own))
+        if self.failure_bounds:
+            window = grip_window(own + failures, own=len(own))
+        else:
+            window = grip_window([])
         self._window = window
         mid = center(successes)
         confidence, best = 0.0, 0.0
@@ -347,7 +389,7 @@ class RetrievalPolicy:
             for e in group
         )
         return Decision(
-            chosen, PROBE, reason, utility=best * confidence, retrieved=used, evidence=evidence
+            chosen, trigger, reason, utility=best * confidence, retrieved=used, evidence=evidence
         )
 
     def _escalation(self, theta: SkillParams) -> Decision:
@@ -382,15 +424,12 @@ class RetrievalPolicy:
         return [_evidence(h.record, h.similarity) for h in hits]
 
     def _own_failures(self) -> list[Evidence]:
-        own = [
-            r
-            for r in self.memory.episodic.records.values()
-            if r.situation == self.situation and not r.success
-        ]
+        records = list(self.memory.episodic.records.values()) + self.scratch
+        own = [r for r in records if r.situation == self.situation and not r.success]
         return [_evidence(r, 1.0) for r in sorted(own, key=lambda r: -r.attempt)]
 
     def _skill(self, query: np.ndarray) -> tuple[dict[str, float], float, float] | None:
-        if not len(self.memory.semantic):
+        if not self.semantic or not len(self.memory.semantic):
             return None
         name, sim = self.memory.semantic.find_similar(query, 1)[0]
         skill = self.library.get(name)
@@ -400,9 +439,15 @@ class RetrievalPolicy:
 
     # --------------------------------------------------------- learning
 
+    def freeze(self) -> None:
+        """No more writes to memory (refer to the module doc)."""
+        self.frozen = True
+        self.scratch = []
+
     def begin_situation(self, key: int) -> None:
         self.situation = int(key)
         self.attempt = 0
+        self.scratch = []
 
     def begin_attempt(self, attempt: int) -> None:
         self.attempt = int(attempt)
@@ -411,7 +456,21 @@ class RetrievalPolicy:
         self, observed: ObservedAttempt, used: Sequence[str], chosen: SkillParams | None = None
     ) -> str:
         """Store the attempt (``chosen``: θ of its probe decision), reinforce the records
-        its decisions used; returns its id."""
+        its decisions used; returns its id. Frozen: only the scratch keeps it."""
+        if self.frozen:
+            rid = f"scratch_{len(self.scratch) + 1:02d}"
+            theta = observed.theta if chosen is None else chosen
+            self.scratch.append(
+                EpisodeRecord(
+                    rid,
+                    int(self.situation or 0),
+                    self.attempt,
+                    theta.to_dict(),
+                    observed.result,
+                    theta_final=observed.theta_final.to_dict(),
+                )
+            )
+            return rid
         self._stored += 1
         while f"ep_{self._stored:05d}" in self.memory.episodic.records:  # a memory given
             self._stored += 1
@@ -439,7 +498,7 @@ class RetrievalPolicy:
             theta_final=observed.theta_final.to_dict(),
         )
         self.memory.episodic.store(record, keys)
-        for used_id in dict.fromkeys(used):
+        for used_id in dict.fromkeys(used) if self.reinforce else ():
             if used_id in self.memory.episodic.records:
                 self.memory.episodic.reinforce(used_id, observed.success)
         logger.info(
@@ -447,13 +506,15 @@ class RetrievalPolicy:
             rid,
             observed.result,
             observed.theta_final.grip_force,
-            len(set(used)),
+            len(set(used)) if self.reinforce else 0,
             "+" if observed.success else "−",
         )
         return rid
 
     def end_situation(self) -> None:
         self.situations += 1
+        if self.frozen or not self.semantic:
+            return
         if self.situations % CONSOLIDATE_EVERY == 0:
             self.library.consolidate(self.memory)
 

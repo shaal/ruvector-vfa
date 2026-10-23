@@ -329,7 +329,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~60 min.
   - depends: T10, T11 (placed here so that T18 runs it)
 
-- [ ] **T18 — Full experiments and ablations → docs/RESULTS.md**
+- [x] **T18 — Full experiments and ablations → docs/RESULTS.md**
   - Goal: honest, reproducible evidence that memory improves movement.
   - Deliverables:
     - `vfa/experiments/run_all.py`: all conditions (`naive`, `best_fixed`, `random_retry`, `memory_ctx_only`, `memory_full`, `bandit`, `bandit_flat`, and the four component ablations below) × 3 evaluation seeds on the frozen benchmark. Plus a **held-out** run: freeze memory after the warm-up seed, then evaluate on new situations with no further writes.
