@@ -112,6 +112,8 @@ class PickPlaceSkill(GraspLiftSkill):
     slip_ran = (*GraspLiftSkill.slip_ran, *PLACE_FIELDS)
 
     def validate(self, env: Any) -> None:
+        if self.residual is not None:  # T21's residual offsets the lift's target: lift only
+            raise ValueError("the pick-and-place skill takes no residual")
         super().validate(env)
         if not RELEASE_PHASES <= env.event_config.release_phases:
             raise ValueError("make the env with EventConfig(release_phases=RELEASE_PHASES)")

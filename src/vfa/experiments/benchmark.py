@@ -158,7 +158,10 @@ MEMORY_POLICIES: dict[str, dict[str, Any]] = {
 FROZEN = "memory_frozen"
 WARMUP = {"seed": 1000, "situations": 60}  # the first evaluation seed, fixed before any run
 MEMORY_CONDITIONS: tuple[str, ...] = (*MEMORY_POLICIES, FROZEN)
-LEARNING_CONDITIONS: tuple[str, ...] = MEMORY_CONDITIONS + BANDIT_CONDITIONS
+# memory_full+residual (T21): memory_full's System 2 over a skill with the learned residual
+# (configs/residual.npz, carried in the chunk key).
+RESIDUAL_CONDITIONS: tuple[str, ...] = ("memory_full+residual",)
+LEARNING_CONDITIONS: tuple[str, ...] = MEMORY_CONDITIONS + BANDIT_CONDITIONS + RESIDUAL_CONDITIONS
 ALL_CONDITIONS: tuple[str, ...] = CONDITIONS + LEARNING_CONDITIONS
 BANDIT_STREAM = 0x42414E44  # "BAND": the bandit's generator is (seed, BANDIT_STREAM)
 BLOCK = 6  # situations per stratified block (one cube per class)
@@ -541,6 +544,10 @@ def _run_learner(
         policy = RetrievalPolicy(embedder=PlaceEmbedder(), **MEMORY_POLICIES[job.condition])
     else:
         policy = RetrievalPolicy(**MEMORY_POLICIES.get(job.condition, {}))
+    if job.condition in RESIDUAL_CONDITIONS:
+        from vfa.skills.residual import ResidualPolicy
+
+        skill = GraspLiftSkill(residual=ResidualPolicy.from_dict(job.key["residual"]))
     core = CognitiveCore(policy)
     if job.condition == FROZEN:
         warmup = job.key["warmup"]
@@ -666,6 +673,12 @@ def plan_condition(
         from vfa.experiments import bandit
 
         extra["bandit"] = bandit.describe(bandit.load_config(), condition == "bandit")
+    if condition in RESIDUAL_CONDITIONS:
+        from vfa.skills.residual import RESIDUAL_PATH, ResidualPolicy
+
+        if not RESIDUAL_PATH.exists():
+            raise ValueError(f"{condition} needs {RESIDUAL_PATH} (train_residual --install)")
+        extra["residual"] = ResidualPolicy.load().to_dict()
     jobs = []
     for seed in seeds:
         for start in range(0, prof.situations, chunk):

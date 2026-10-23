@@ -95,6 +95,8 @@ from vfa.sim.recorder import Episode
 from vfa.sim.sensors import read_privileged
 from vfa.skills.params import SkillParams
 from vfa.skills.reflexes import SlipReflex
+from vfa.skills.residual import PHASES as RESIDUAL_PHASES
+from vfa.skills.residual import ResidualPolicy, ResidualState, features
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +220,10 @@ class GraspLiftSkill:
     # θ fields that have run when a SLIP_UNRECOVERED escalation fires (in LIFT or HOLD).
     slip_ran: tuple[str, ...] = ("grasp_depth", "approach_speed", "lift_accel")
 
-    def __init__(self) -> None:
+    def __init__(self, residual: ResidualPolicy | None = None) -> None:
+        if residual is not None and not isinstance(residual, ResidualPolicy):
+            raise TypeError(f"residual must be a ResidualPolicy or None, got {residual!r}")
+        self.residual = residual  # T21: a learned correction in SQUEEZE, LIFT, HOLD; off: None
         self.phase = "IDLE"
         self.theta: SkillParams | None = None
         self.probe: ProbeFeatures | None = None
@@ -256,6 +261,7 @@ class GraspLiftSkill:
         self._info: dict[str, Any] = {}
         self._new: set[str] = set()
         self._phase_seen: set[str] = set()  # events since the phase began
+        self._residual_state = ResidualState()
         self._program = self._run()
 
     def act(self, obs: Mapping[str, np.ndarray], info: Mapping[str, Any]) -> np.ndarray | None:
@@ -513,6 +519,8 @@ class GraspLiftSkill:
 
     def _action(self, pos: np.ndarray) -> np.ndarray:
         """The env action that moves the ee target to ``pos`` this tick, with the grip."""
+        if self.residual is not None and self._grip > 0.0 and self.phase in RESIDUAL_PHASES:
+            return self._residual_action(pos)
         env = self._env
         pos = np.clip(pos, E.TARGET_LOW, E.TARGET_HIGH)
         a = np.empty(4)
@@ -520,6 +528,32 @@ class GraspLiftSkill:
         norm = float(np.linalg.norm(delta))
         a[:3] = delta / norm if norm > 1.0 else delta
         a[3] = self._grip / E.GRIP_FORCE_MAX if self._grip > 0.0 else -1.0
+        return a
+
+    def _residual_action(self, pos: np.ndarray) -> np.ndarray:
+        """``_action`` with the T21 residual: the grip command rises toward ``self._grip``
+        by the residual's step, and in LIFT and HOLD the target gets its vertical offset
+        (refer to ``vfa.skills.residual``). θ and its record stay System 1's."""
+        env, state = self._env, self._residual_state
+        slip = env.sensors.slip
+        x = features(
+            self.phase,
+            self._obs["wrench"],
+            float(self._obs["load"][0]),
+            slip.load,
+            slip.peak,
+            slip.watching,
+        )
+        step, vz = self.residual.outputs(x)
+        grip = state.grip(self._grip, step, env.gripper.actuator_squeeze())
+        if self.phase != "SQUEEZE":
+            pos = pos + (0.0, 0.0, state.move(vz, self._dt))
+        pos = np.clip(pos, E.TARGET_LOW, E.TARGET_HIGH)
+        a = np.empty(4)
+        delta = (pos - self._obs["ee_target"]) / env.max_step
+        norm = float(np.linalg.norm(delta))
+        a[:3] = delta / norm if norm > 1.0 else delta
+        a[3] = grip / E.GRIP_FORCE_MAX
         return a
 
     def _move(
