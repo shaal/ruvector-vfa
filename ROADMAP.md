@@ -253,7 +253,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~45 min. Tests < 30 s.
   - depends: T13
 
-- [ ] **T15 — Retrieval-augmented adaptation + retry-until-success**
+- [x] **T15 — Retrieval-augmented adaptation + retry-until-success**
   - Goal: the core loop of the brief — retrieve what worked, bias toward it, retry until success, store everything.
   - Deliverables:
     - `vfa/cognition/system2.py`: `RetrievalPolicy`:
