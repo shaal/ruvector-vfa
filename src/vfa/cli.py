@@ -29,8 +29,17 @@ def _scene_check(argv: Sequence[str]) -> int:
     return scene_check.main(argv, prog="vfa scene-check")
 
 
+def _demo(argv: Sequence[str]) -> int:
+    from vfa.experiments import demo
+
+    return demo.main(argv, prog="vfa demo")
+
+
 # Implemented subcommands: name -> handler(remaining argv) -> exit code.
-_HANDLERS: dict[str, Callable[[Sequence[str]], int]] = {"scene-check": _scene_check}
+_HANDLERS: dict[str, Callable[[Sequence[str]], int]] = {
+    "scene-check": _scene_check,
+    "demo": _demo,
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
