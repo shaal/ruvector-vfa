@@ -512,7 +512,8 @@ def print_tables(result: Mapping[str, Any]) -> None:
         print(f"| `{c}` | {' | '.join(cells)} | {label} |")
     held = result["profiles"]["heldout"]
     print(
-        "\n| Held-out (seed 2000) | success@1 | success@1, 21–60 | success@5 "
+        f"\n| Held-out (seed {', '.join(str(s) for s in held['naive']['seeds'])}) "
+        "| success@1 | success@1, 21–60 | success@5 "
         "| attempts-to-success | break rate |"
     )
     print("|---|---|---|---|---|---|")
@@ -561,8 +562,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--out", type=Path, default=B.DEFAULT_OUT)
     parser.add_argument("--workers", type=int, default=B.default_workers())
     parser.add_argument("--deadline", type=float, default=DEADLINE_S, help="seconds")
-    parser.add_argument("--figures", type=Path, default=FIGURES, help="figure directory")
+    parser.add_argument(
+        "--figures",
+        type=Path,
+        default=None,
+        help="figure directory (default: docs/figures "
+        "for the default --out, else <out>/t18/figures)",
+    )
     args = parser.parse_args(argv)
+    if args.figures is None:  # never overwrite the committed figures from another --out
+        args.figures = FIGURES if args.out == B.DEFAULT_OUT else args.out / "t18" / "figures"
     if command == "run":
         return 0 if B.run_jobs(plan(config, args.out), args.workers, args.deadline) else 3
     if command == "aggregate":
