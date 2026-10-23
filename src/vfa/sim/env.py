@@ -112,8 +112,9 @@ lowest point since the grasp closed. In a carry, at most ``RELEASE_HEIGHT``
 above that point, a lowering (osc: the commanded target moves down, so payload
 sag is not one; torque: the ee sits ``CARRY_RISE`` below the carry's highest
 point and the held load stayed below ``SETDOWN_LOAD`` of the carry's reference
-load for ``SETDOWN_S``; the reference is the highest level the load held for
-``SETDOWN_WINDOW_S``, so a load spike cannot set it, T19) is a set-down,
+load, minus ``SETDOWN_NOISE_K`` σ of the estimate's noise, for ``SETDOWN_S``;
+the reference is the highest level the load held for ``SETDOWN_WINDOW_S``, so
+neither a load spike nor a noise dip fakes one, T19) is a set-down,
 ``PLACE``, and an open is a release, ``RELEASE``; both call ``unwatch_slip()``,
 since the table taking the load is not a drop (T06). Higher up the carry stays
 watched, so an open there makes the cube's fall a ``DROP``.
@@ -264,9 +265,13 @@ PLACE_TOUCHDOWN_RADIUS = 0.04  # m
 # highest level the load held for SETDOWN_WINDOW_S in this carry, so a spike (a fast lift
 # start slipped a heavy cube in the grip: 1.4-2.8x the static load) cannot set it (T19);
 # payload sag lowers the ee 3+ mm but keeps the load.
+# With sensor noise the load must also stay SETDOWN_NOISE_K σ of the filtered estimate
+# below that line (the slip detector's own margin): at 5 % below a 0.5 N reference, a
+# noise dip of two ticks set a cube down 1.6 cm in the air in 3 of 10 carries (T19).
 SETDOWN_LOAD = 0.95
 SETDOWN_S = 0.004  # two control ticks: shorter than the slip detector's 6 ms debounce
 SETDOWN_WINDOW_S = 0.1
+SETDOWN_NOISE_K = 4.0
 # MuJoCo's solver warmstart, off until the robot first touches the cube (refer to reset).
 _WARMSTART = int(mujoco.mjtDisableBit.mjDSBL_WARMSTART)
 # Ground-truth events: for scoring and logs, reported under info["privileged"].
@@ -844,7 +849,8 @@ class PandaVFAEnv(gym.Env):
             # ee, not the load)
             if suite.slip.watching:
                 self._track_carry_load(float(frame.load))
-                below = frame.load < SETDOWN_LOAD * self._carry_load
+                margin = SETDOWN_NOISE_K * suite.slip.sigma()  # 0 without sensor noise
+                below = frame.load + margin < SETDOWN_LOAD * self._carry_load
                 self._unloaded = self._unloaded + 1 if below else 0
             lowered = rise < self._carry_peak - CARRY_RISE and self._unloaded >= round(
                 SETDOWN_S / self.dt
@@ -888,8 +894,8 @@ class PandaVFAEnv(gym.Env):
     def _track_carry_load(self, load: float) -> None:
         """Raise the carry's reference load to the lowest load of the last
         ``SETDOWN_WINDOW_S`` (a level the load held that long; refer to SETDOWN_LOAD).
-        Until the carry is that old there is no reference (0), so no set-down: an
-        open near the table is still a release."""
+        Until the carry is that old the reference is 0: a set-down then needs the
+        table to push the load below 0, and an open near the table is a release."""
         window = self._load_window
         window.append(load)
         full = round(SETDOWN_WINDOW_S / self.dt)

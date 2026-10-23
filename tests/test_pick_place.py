@@ -305,11 +305,53 @@ def test_the_set_down_reference_needs_a_held_level() -> None:
     assert env._carry_load == 7.08
 
 
-def test_pick_place_out_option_takes_both_forms(tmp_path, capsys) -> None:
-    for form in (["--out", str(tmp_path / "a")], [f"--out={tmp_path / 'b'}"]):
+def _noisy_torque_carry(seed: int, final_z: float) -> tuple[E.PandaVFAEnv, TorqueScript]:
+    """light_rigid under realistic noise in torque mode: grasp, carry 6 cm up to the
+    target, lower at 2 cm/s to ``final_z`` above the cube's start height, hold."""
+    env = E.PandaVFAEnv(
+        "pick_place",
+        control="torque",
+        step_hz=500,
+        sensor_config=SensorConfig(noise=REALISTIC_NOISE),
+    )
+    obs, _ = env.reset(seed=seed, options={"object_class": "light_rigid"})
+    cube, goal = obs["cube_pos"].copy(), obs["goal"].copy()
+    t = TorqueScript(env, obs).grip(None)
+    t.move(cube + (0.0, 0.0, 0.12), 0.3).wait(0.3).move(cube, 0.1).wait(0.3)
+    t.grip(GRIP["light_rigid"]).wait(0.9)
+    t.move(cube + (0.0, 0.0, 0.06), 0.1).move((goal[0], goal[1], cube[2] + 0.06), 0.15)
+    t.move((goal[0], goal[1], cube[2] + final_z), 0.02).wait(0.3)
+    return env, t
+
+
+@pytest.mark.parametrize("seed", [0, 3])
+def test_torque_mode_noise_dip_in_the_air_is_no_set_down(seed: int) -> None:
+    """Under realistic noise a two-tick dip 5 % below a 0.5 N reference set these cubes
+    down 1.6 cm in the air; the 4σ noise margin keeps the carry."""
+    env, _ = _noisy_torque_carry(seed, 0.016)
+    assert not env._cube_contacts() & 1
+    assert env.phase == "CARRY"
+
+
+def test_torque_mode_noisy_set_down_still_places() -> None:
+    env, t = _noisy_torque_carry(0, 0.008)
+    goal = t.obs["goal"]
+    t.move((goal[0], goal[1], t.obs["ee_pos"][2] - 0.01), 0.004).wait(0.2)  # onto the table
+    assert env.phase == "PLACE"
+    t.grip(None).wait(0.5).move((goal[0], goal[1], 0.2), 0.1).wait(1.0)
+    assert t.infos[-1]["result"] == "SUCCESS"
+
+
+def test_pick_place_out_option_takes_every_form(tmp_path) -> None:
+    forms = (
+        ["--out", str(tmp_path / "a")],
+        [f"--out={tmp_path / 'b'}"],
+        ["--ou", str(tmp_path / "c")],
+    )
+    for form in forms:
         assert B.main(["aggregate", "--task", "pick_place", "--partial", *form]) == 0
-    assert (tmp_path / "a" / "quick" / "metrics.json").exists()
-    assert (tmp_path / "b" / "quick" / "metrics.json").exists()
+    for name in "abc":
+        assert (tmp_path / name / "quick" / "metrics.json").exists()
 
 
 # ------------------------------------------------------------ acceptance

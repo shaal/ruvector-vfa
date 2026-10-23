@@ -1079,7 +1079,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workers", type=int, default=default_workers())
     parser.add_argument("--deadline", type=float, default=DEFAULT_DEADLINE_S, help="seconds")
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--out", type=Path, default=None, help="default runs/benchmark")
     _task_option(parser)
 
 
@@ -1103,12 +1103,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     task = task_parser.parse_known_args(argv)[0].task
     pick_place = task == "pick_place"
     config = load_pick_place_config() if pick_place else load_benchmark_config()
-    if pick_place and not any(a == "--out" or a.startswith("--out=") for a in argv):
-        argv = [*argv, "--out", str(PICK_PLACE_OUT)]
+
+    def parse(parser: argparse.ArgumentParser) -> argparse.Namespace:
+        """Parse, then resolve the default output root (pick_place has its own)."""
+        args = parser.parse_args(argv)
+        if args.out is None:
+            args.out = PICK_PLACE_OUT if pick_place else DEFAULT_OUT
+        return args
+
     if pick_place and command not in ("run", "aggregate", "freeze"):
         raise SystemExit(f"the pick_place benchmark has no {command!r} command")
     if command == "run":
-        args = build_parser().parse_args(argv)
+        args = parse(build_parser())
         if args.profile not in config.profiles:
             raise SystemExit(f"--profile must be one of {sorted(config.profiles)}")
         allowed = config.profiles[args.profile].seeds
@@ -1152,10 +1158,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "aggregate":
         parser = argparse.ArgumentParser(description="aggregate chunk files into metrics.json")
         parser.add_argument("--profile", default="quick" if pick_place else "full")
-        parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+        parser.add_argument("--out", type=Path, default=None, help="default runs/benchmark")
         parser.add_argument("--partial", action="store_true", help="allow missing conditions")
         _task_option(parser)
-        args = parser.parse_args(argv)
+        args = parse(parser)
         if args.profile not in config.profiles:
             raise SystemExit(f"--profile must be one of {sorted(config.profiles)}")
         try:
@@ -1187,7 +1193,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser = argparse.ArgumentParser(description="best_fixed grid search on the calib seeds")
         _common(parser)
         parser.add_argument("--write", action="store_true", help="write configs/best_fixed.toml")
-        args = parser.parse_args(argv)
+        args = parse(parser)
         jobs = plan_grid(config, args.out)
         if not run_jobs(jobs, args.workers, args.deadline):
             return 3
