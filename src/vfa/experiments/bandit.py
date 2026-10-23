@@ -10,8 +10,8 @@ from learning alone.
 of its closure-force slope (3 × 3 = 9 buckets); a feature's bin edges are its
 quantiles over every episode of the calibration fixture
 (``tests/fixtures/calib_episodes.npz``), so no evaluation data sets them. The
-fixture also holds ``random_retry`` retries at other grasp depths, so the bins
-are not equal shares of the probes the bandit sees (``naive``'s first attempts
+fixture also holds retries (of ``naive``, and of ``random_retry`` at other grasp
+depths), so the bins are not equal shares of the probes the bandit sees (``naive``'s first attempts
 fill the slope bins 0.20 / 0.44 / 0.36). A value on an edge goes to the upper
 bin; a missing slope (no indentation, so the stiffest contact) goes to the top
 bin. ``bandit_flat`` has one bucket: an online learner of the single best θ.
