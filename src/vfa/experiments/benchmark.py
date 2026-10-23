@@ -26,7 +26,8 @@ class, or the cube) and retries a failed situation up to ``max_attempts``
 times.
 
 **Chunks** (CLAUDE.md, Runtime limits). A chunk is one condition × one seed ×
-``CHUNK`` situations, written to
+``CHUNK`` situations (a memory condition, T15: one chunk per seed, because its
+memory evolves in situation order), written to
 ``runs/benchmark/<profile>/<condition>/seed<s>_<start>-<end>.json`` with the
 records of every attempt. A run skips chunks whose file already exists with
 the same key (the situation files' hash, a fingerprint of the code that runs
@@ -36,7 +37,9 @@ chunks it had started) stops submitting chunks, and the same command continues
 the work. ``--workers`` runs chunks in parallel processes (default
 ``min(8, cpu − 2)``). ``aggregate`` reads the chunks and writes
 ``runs/benchmark/<profile>/metrics.json``; it refuses a condition with missing
-chunks unless ``--partial``.
+chunks unless ``--partial`` (a memory condition with no chunk file at all is
+left out). A memory condition's run first runs ``naive`` on the same seeds and
+then prints success@1 per half and per block of ``BLOCK`` situations for both.
 
 **Metrics** (per seed, then mean ± sample std over seeds): success@1 and
 success@k (k = ``max_attempts``) over situations, and success@1 over
@@ -87,6 +90,7 @@ from vfa.experiments.baselines import (
     grid_thetas,
     make_baseline,
 )
+from vfa.memory.embeddings import STATS_PATH
 from vfa.sim import objects as OB
 from vfa.sim.env import PandaVFAEnv
 from vfa.sim.sensors import REALISTIC_NOISE, SensorConfig, SensorNoise
@@ -110,7 +114,13 @@ CODE_FILES: tuple[str, ...] = (
     "skills/*.py",
     "experiments/baselines.py",
     "experiments/benchmark.py",
+    "memory/*.py",
+    "cognition/*.py",
 )
+# Memory conditions (T15): one chunk per seed, because memory evolves within a seed.
+MEMORY_CONDITIONS: tuple[str, ...] = ("memory_full", "memory_ctx_only")
+ALL_CONDITIONS: tuple[str, ...] = CONDITIONS + MEMORY_CONDITIONS
+BLOCK = 6  # situations per stratified block (one cube per class)
 NOISES: dict[str, SensorNoise] = {"none": SensorNoise(), "realistic": REALISTIC_NOISE}
 G = 9.81
 _FORCE_PHASES = ("SQUEEZE", "LIFT", "HOLD")
@@ -334,7 +344,7 @@ def run_situation(
 class Job:
     """One chunk: a condition (or a grid θ) × one seed × situations [start, end)."""
 
-    condition: str  # a baseline, or "grid"
+    condition: str  # a baseline, a memory condition (one chunk per seed), or "grid"
     seed: int
     start: int
     end: int
@@ -366,12 +376,17 @@ def run_chunk(job: Job) -> tuple[str, int, float]:
     logging.disable(logging.CRITICAL)  # thousands of attempts: keep worker logs quiet
     wall0 = time.perf_counter()
     env, skill, objects = _worker_env(job.noise)
+    situations = make_situations(job.seed, job.end, objects, start=job.start)
+    save = None if job.save_episodes is None else Path(job.save_episodes)
+    if job.condition in MEMORY_CONDITIONS:
+        records = _run_memory(job, env, skill, situations, save)
+        payload = {"key": job.key, "records": records, "wall_s": time.perf_counter() - wall0}
+        _write_json(Path(job.path), payload)
+        return job.path, len(records), payload["wall_s"]
     if job.theta is not None:
         policy = Baseline(job.condition, SkillParams.from_dict(job.theta))
     else:
         policy = make_baseline(job.condition)
-    situations = make_situations(job.seed, job.end, objects, start=job.start)
-    save = None if job.save_episodes is None else Path(job.save_episodes)
     records: list[dict[str, Any]] = []
     for situation in situations:
 
@@ -384,6 +399,46 @@ def run_chunk(job: Job) -> tuple[str, int, float]:
     payload = {"key": job.key, "records": records, "wall_s": time.perf_counter() - wall0}
     _write_json(Path(job.path), payload)
     return job.path, len(records), payload["wall_s"]
+
+
+def _run_memory(
+    job: Job,
+    env: PandaVFAEnv,
+    skill: GraspLiftSkill,
+    situations: Sequence[Situation],
+    save: Path | None,
+) -> list[dict[str, Any]]:
+    """A memory condition on one seed: a fresh memory, situations in order (T15).
+
+    The policy sees only the situation's opaque key and what the core's percepts
+    hold; the scoring record (``attempt_record``) never reaches it.
+    """
+    from vfa.cognition.cognitive_core import CognitiveCore
+    from vfa.cognition.retry import solve_situation
+    from vfa.cognition.system2 import RetrievalPolicy
+
+    keys = "context" if job.condition == "memory_ctx_only" else "full"
+    core = CognitiveCore(RetrievalPolicy(keys=keys))
+    records: list[dict[str, Any]] = []
+    for situation in situations:
+
+        def score(result: AttemptResult, attempt: int, situation=situation) -> None:
+            records.append(attempt_record(result, situation, attempt))
+            if save is not None and result.episode is not None:
+                name = f"seed{situation.seed}_s{situation.index:03d}_a{attempt}"
+                result.episode.save(save / job.condition / name)
+
+        solve_situation(
+            env,
+            core,
+            skill,
+            job.max_attempts,
+            key=situation.key,
+            seed_of=lambda a, s=situation: env_seed(s.seed, s.index, a),
+            options={"object": situation.spec},
+            on_attempt=score,
+        )
+    return records
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -428,6 +483,7 @@ def code_fingerprint() -> str:
         for p in ASSETS_DIR.rglob("*")
         if p.is_file() and not any(part.startswith(".") for part in p.relative_to(ASSETS_DIR).parts)
     )
+    files.append(STATS_PATH)  # the memory keys' standardization (T11)
     versions = (
         f"mujoco {mujoco.__version__} numpy {np.__version__} gymnasium {gymnasium.__version__}"
     ).encode()
@@ -445,13 +501,17 @@ def plan_condition(
     """The chunks of one condition on one profile (optionally only some seeds)."""
     prof = config.profiles[profile]
     seeds = prof.seeds if seeds is None else tuple(seeds)
-    theta = make_baseline(condition).fixed
+    memory = condition in MEMORY_CONDITIONS
+    if not memory and condition not in CONDITIONS:
+        raise ValueError(f"condition must be one of {ALL_CONDITIONS}, got {condition!r}")
+    theta = None if memory else make_baseline(condition).fixed
     fixed = None if condition == "naive" or theta is None else theta.to_dict()
+    chunk = prof.situations if memory else CHUNK
     code = code_fingerprint()
     jobs = []
     for seed in seeds:
-        for start in range(0, prof.situations, CHUNK):
-            end = min(start + CHUNK, prof.situations)
+        for start in range(0, prof.situations, chunk):
+            end = min(start + chunk, prof.situations)
             key = {
                 "config": _config_hash(),
                 "code": code,
@@ -630,6 +690,65 @@ METRICS: tuple[str, ...] = (
 )
 
 
+def first_attempts(records: Sequence[dict]) -> dict[int, bool]:
+    """Situation index → did attempt 1 succeed."""
+    return {r["situation"]: bool(r["success"]) for r in records if r["attempt"] == 1}
+
+
+def learning(
+    config: BenchmarkConfig,
+    condition: str,
+    profile: str,
+    out: Path = DEFAULT_OUT,
+    seeds: Sequence[int] | None = None,
+) -> dict[str, Any]:
+    """success@1 per half and per block of ``BLOCK`` situations, pooled over the
+    seeds (default: the profile's), for ``condition`` and ``naive``; a condition
+    whose chunks are not all done is listed under ``missing``."""
+    n = config.profiles[profile].situations
+    half = n // 2
+    result: dict[str, Any] = {"situations": n, "conditions": {}, "missing": []}
+    for name in dict.fromkeys((condition, "naive")):
+        jobs = plan_condition(config, name, profile, seeds, out=out)
+        if not all(_chunk_done(Path(j.path), j.key) for j in jobs):
+            result["missing"].append(name)
+            continue
+        firsts = [first_attempts(r) for r in load_records(jobs).values()]
+        pooled = [(i, ok) for f in firsts for i, ok in f.items()]
+
+        def rate(lo: int, hi: int, pooled=pooled) -> float:
+            sel = [ok for i, ok in pooled if lo <= i < hi]
+            return sum(sel) / len(sel)
+
+        result["conditions"][name] = {
+            "first_half": rate(0, half),
+            "second_half": rate(half, n),
+            "blocks": [rate(b, min(b + BLOCK, n)) for b in range(0, n, BLOCK)],
+            "n_per_half": len([1 for i, _ in pooled if i < half]),
+        }
+    return result
+
+
+def print_learning(
+    config: BenchmarkConfig,
+    condition: str,
+    profile: str,
+    out: Path,
+    seeds: Sequence[int] | None = None,
+) -> None:
+    report = learning(config, condition, profile, out, seeds)
+    for name in report["missing"]:
+        print(f"{name}: chunks missing or stale on this --out; no learning report")
+    half = report["situations"] // 2
+    for name, c in report["conditions"].items():
+        print(
+            f"{name}: success@1 situations 0-{half - 1} {c['first_half']:.3f}, "
+            f"{half}-{report['situations'] - 1} {c['second_half']:.3f} "
+            f"(pooled, {c['n_per_half']} per half); per block of {BLOCK}: "
+            + " ".join(f"{b:.2f}" for b in c["blocks"])
+        )
+
+
 def combine(per_seed: Mapping[int, dict]) -> dict[str, Any]:
     """Mean and sample standard deviation (ddof 1) over seeds of each scalar metric."""
     out: dict[str, Any] = {"seeds": sorted(per_seed)}
@@ -659,8 +778,10 @@ def aggregate(
         "conditions": {},
         "missing": {},
     }
-    for condition in CONDITIONS:
+    for condition in ALL_CONDITIONS:
         jobs = plan_condition(config, condition, profile, out=out)
+        if condition in MEMORY_CONDITIONS and not any(Path(j.path).exists() for j in jobs):
+            continue  # a memory condition that was never run on this --out
         missing = [j.path for j in jobs if not _chunk_done(Path(j.path), j.key)]
         if missing:
             result["missing"][condition] = len(missing)
@@ -771,7 +892,7 @@ def throughput(config: BenchmarkConfig, attempts: int) -> dict[str, float]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--condition", choices=CONDITIONS, required=True)
+    parser.add_argument("--condition", choices=ALL_CONDITIONS, required=True)
     parser.add_argument("--profile", default="quick")
     parser.add_argument("--seed", type=int, action="append", help="only these seeds")
     _common(parser)
@@ -810,9 +931,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             skipped = sum(_chunk_done(Path(j.path), j.key) for j in jobs)
             if skipped:
                 print(f"note: {skipped} chunks are done already; their episodes are not saved")
-        done = run_jobs(jobs, args.workers, args.deadline)
+        t0 = time.perf_counter()
+        if args.condition in MEMORY_CONDITIONS:  # "naive" first: the learning report's bar
+            naive = plan_condition(config, "naive", args.profile, args.seed, args.out)
+            if not run_jobs(naive, args.workers, args.deadline):
+                return 3
+        left = max(0.0, args.deadline - (time.perf_counter() - t0))
+        done = run_jobs(jobs, args.workers, left)
         if done:
             by_seed = load_records(jobs)
+            if args.condition in MEMORY_CONDITIONS:
+                print_learning(config, args.condition, args.profile, args.out, args.seed)
             for seed, records in sorted(by_seed.items()):
                 m = summarize(records, config.max_attempts)
                 print(

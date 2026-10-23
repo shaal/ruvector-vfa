@@ -84,3 +84,46 @@ No safety stop occurred in any condition. Per class, success@1 / success@5 (mean
 | `key_pre` (context only) | 12 | −0.006 |
 
 The probe separates the classes (acceptance: gap ≥ 0.1); the observed context does not, as designed. A calibration attempt replayed live gives the fixture's keys (cosine > 0.9999), and the `key_probe` built from the recorder at `PROBE_DONE` equals the one built from the finished episode.
+
+## 6. Retrieval and retry on `quick` (T15)
+
+`uv run python -m vfa.experiments.benchmark --condition <c> --profile quick --workers 8` for `memory_full` and `memory_ctx_only` (the force ablation: every key is the context key); each first runs `naive` on the same code. The `quick` seeds (500, 501; 60 situations each) are T10's tuning seeds, so these numbers are in-sample. The policy's thresholds (ARCHITECTURE §7) have not changed since the first memory run; later logic fixes ran on these same seeds. One memory chunk (a whole seed, in order) took about 45–60 s.
+
+The gate, fixed before the first run: pooled over both seeds, `memory_full`'s success@1 on situations 30–59 must be above its own on 0–29 and above `naive`'s on 30–59.
+
+| Condition | success@1, 0–29 | success@1, 30–59 | success@1 | success@5 | attempts-to-success | break rate |
+|---|---|---|---|---|---|---|
+| `naive` | 0.633 | 0.700 | 0.667 | 0.667 | 2.67 | 0.499 |
+| `memory_full` | 0.817 | **0.950** | **0.883** | **1.000** | **1.13** | **0.066** |
+| `memory_ctx_only` | 0.617 | 0.583 | 0.600 | 1.000 | 1.575 | 0.237 |
+
+The halves pool 60 situations each; the last four columns are means over the two seeds (success@1 per seed: `naive` 0.650 / 0.683, `memory_full` 0.867 / 0.900, `memory_ctx_only` 0.600 / 0.600).
+
+**Gate met.** `memory_full` rises from 0.817 to 0.950 and beats `naive` in both halves. Bootstrap over situations (10 000 draws, seed 0; each half resampled separately as one index array, paired across conditions; 95 % intervals): its rise +0.133 [+0.033, +0.250]; its lead over `naive` +0.183 [+0.083, +0.283] on 0–29 and +0.250 [+0.150, +0.367] on 30–59. Its rise is also larger than `naive`'s own (+0.067), the stricter bar of §1, but that difference is not resolved: +0.067 [−0.083, +0.217]. The robust claim is the lead over `naive`, which grows once memory holds a few cubes per class.
+
+success@1 per block of 6 situations (one cube per class), pooled over both seeds:
+
+| Block | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `naive` | 0.58 | 0.58 | 0.58 | 0.67 | 0.75 | 0.67 | 0.58 | 0.75 | 0.75 | 0.75 |
+| `memory_full` | 0.58 | 0.92 | 0.83 | 0.83 | 0.92 | 0.83 | 0.92 | 1.00 | 1.00 | 1.00 |
+| `memory_ctx_only` | 0.58 | 0.67 | 0.50 | 0.67 | 0.67 | 0.67 | 0.67 | 0.75 | 0.42 | 0.42 |
+
+First-attempt successes per class (20 cubes each, both seeds):
+
+| Class | `naive` | `memory_full` | `memory_ctx_only` |
+|---|---|---|---|
+| `brittle` | 12 | 15 | 6 |
+| `fragile_soft` | 0 | 16 | 2 |
+| `heavy_rigid` | 20 | 20 | 18 |
+| `heavy_slippery` | 9 | 15 | 9 |
+| `light_rigid` | 20 | 20 | 20 |
+| `slippery` | 19 | 20 | 17 |
+
+- With empty memory the probe decision keeps the default θ, so a first cube is paired with `naive` (`tests/test_retry.py` checks one bit for bit); only a slip escalation, which raises the grip, can differ.
+- `memory_ctx_only` solves every cube within 5 attempts through the retry bisection alone, but its first attempts get worse than `naive`'s in the second half (0.583 vs 0.700): with context keys the 0.8 threshold admits cubes of other classes, whose grips mislead. The first-attempt gain comes from the force features at the probe.
+- `memory_full`'s first-attempt failures are in `brittle` (5), `heavy_slippery` (5), and `fragile_soft` (4). A replay of both seeds logged each failed first decision: 12 of the 14 kept the default grip because no stored attempt reached similarity 0.8 (early in a run, or a cube that felt unlike the earlier ones of its class), and 2 followed a single similar success of another cube.
+
+**Calibration seeds** (`--profile calib`, seeds 0 and 1; not held out: their `naive` and `random_retry` episodes are the fixture that fit the embedding statistics, T13's clustering constants, and the similarity scale behind `SIM_STRONG`): `memory_full` 0.783 on 0–29 and 0.900 on 30–59 (success@1 0.842, success@5 1.000, attempts-to-success 1.19, break rate 0.084); `naive` 0.583 and 0.633 (0.608, 0.617, 2.94, 0.507).
+
+**Sensitivity** (information only; `memory_full` on `quick` with one constant changed, pooled success@1 on 0–29 → 30–59): the setting used, 0.817 → 0.950; `SIM_STRONG` 0.75: 0.817 → 0.950, 0.85: 0.767 → 0.867; `MARGIN` 0.05: 0.800 → 0.950, 0.2: 0.800 → 0.950; `SIGMA0` 0: 0.800 → 0.950, 0.3: 0.817 → 0.950. Every setting stays above `naive`'s 0.700 on 30–59.

@@ -271,29 +271,32 @@ A failed attempt adds `[S2] trigger=failure key_retry …` and a retry with an a
 ```
 solve_situation(situation):
     for attempt in 1..max_attempts:
-        θ = S2.decide(key_pre)                      # trigger: attempt start
+        θ = S2.decide(key_pre)              # trigger: start, or failure on a retry (key_retry)
         run System 1 until PROBE_DONE
-        θ = S2.decide(key_probe, prior=θ)           # trigger: probe
+        θ = S2.decide(key_probe, prior=θ)   # trigger: probe — the decision that sets the grip
         result = run System 1 to the end (reflexes may escalate to S2)
         memory.store(result); memory.reinforce(used_records, result.success)
         if result.success: return attempt
-        key_retry = embed(result)                   # the failure is now the best evidence
     return FAILED
 
-S2.decide(key):
-    S, F = top-k successes, top-k failures by similarity × (0.5 + utility)
-    center = similarity-weighted mean of θ over S        (default θ if S is empty)
-    for each failure f in F (weighted by similarity):
+S2.decide(key_probe):
+    S, F = k strong successes, k strong failures (similarity ≥ 0.8, best ranked by
+           similarity × (0.5 + utility)), never from this cube
+    window: this cube's own failures first (highest slip, lowest break grip), then each f in F:
         SLIP / DROP at grip g  → lower bound ≥ g · (1 + margin)
         BREAK at grip g        → upper bound ≤ g · (1 − margin)
-        BREAK at close speed v → close-speed upper bound ≤ v · (1 − margin)
-    θ = clip(center, bounds); if S is empty: θ = midpoint of bounds
-    θ += noise with σ = σ0 · (1 − best_similarity · skill_confidence)
+    center = weighted geometric mean of grips over S, else the nearest skill's θ, else none
+    θ.grip = center if inside the window (and its edges are not this cube's failed grips),
+             else the window's midpoint;
+        with no center: midpoint once a failure set a bound, else the default θ's grip
+    θ.grip += noise (center only) with σ = σ0 · (1 − best_similarity · confidence)
 ```
 
 On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so its bound dominates — the window narrows like a bisection guided by force evidence. Across situations, the memory transfers what worked for objects that *felt* similar during the probe.
 
 **T10 handoffs to T15.** A failure's force bound must come from observable signals (θ, the pad forces): the recorded `BREAK` event's `force`, the `LIFTED` event's `rise`, and the outcome's `peak_cube_force` and `rise` are ground truth and would leak the hidden break force. A policy gets only `Situation.key` from the runner, never the index or the record. Memory conditions run one seed sequentially (one chunk per seed, not the baselines' 15-situation chunks), and `CODE_FILES` in `benchmark.py` must gain `memory/` and `cognition/` so their chunks re-run after a code change. From T11: similarities are not comparable across keys (`key_pre` ranks every cube of a size and pose alike, so its hits say nothing about the class); `key_retry` ranks by failure type, and a failed attempt's post-probe wrist profile resembles no success's, so on a retry the success neighbours should come from the failed attempt's `key_probe` and the failure neighbours from `key_retry`. The probe only barely separates `slippery` from `heavy_slippery` (a high grip serves both) and `fragile_soft` from `light_rigid` (a high grip breaks the first), so T13's clusters may merge such pairs; clustering with more clusters than classes, and restarts, keeps them apart better.
+
+**As built in T15** (`vfa/cognition/system2.py`, `retry.py`). System 2 decides at `PROBE_DONE`; at start and on a retry it keeps the default θ (`key_pre` and `key_retry` do not separate the classes, T11). The grip window starts at the `SkillParams` bounds; the cube's own failures bound it first (highest slip, lowest break), then failure neighbours with `key_probe` similarity ≥ 0.8, at ±10 % of the grip that ran at the end; a neighbour's bound that would empty the window is skipped. The K best strong successes give a weighted geometric center; outside the window, or when its edges are grips this cube failed at, it yields to the window's geometric midpoint. Failures bound only the grip: after the probe the closing speed breaks nothing (T08). Records keep the probe decision's θ. On `quick`, success@1 rises from 0.817 to 0.950 (`naive` 0.633 to 0.700; RESULTS §6).
 
 ---
 
@@ -320,7 +323,7 @@ On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so 
 | `memory_no_reinforce` | `memory_full` with utility fixed at 0.5: ranking by similarity only (T18 component ablation) |
 | `memory_no_semantic` | `memory_full` without consolidation or `SkillLibrary`; episodic hits only (T18) |
 | `memory_no_probe` | `memory_full` without the System 2 decision at `PROBE_DONE` (T18) |
-| `memory_no_failure_bounds` | `memory_full` without the grip and close-speed bounds from failures (T18) |
+| `memory_no_failure_bounds` | `memory_full` without the grip bounds from failures (T18) |
 
 **Metrics**
 
