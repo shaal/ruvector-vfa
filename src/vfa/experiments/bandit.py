@@ -8,10 +8,15 @@ from learning alone.
 ``close_speed`` pair of a fixed grid (8 × 3 = 24 arms; the other θ fields keep
 ``naive``'s values). A context bucket is a bin of the probe's heft load × a bin
 of its closure-force slope (3 × 3 = 9 buckets); a feature's bin edges are its
-quantiles over the calibration fixture (``tests/fixtures/calib_episodes.npz``),
-so no evaluation data sets them. A value on an edge goes to the upper bin; a
-missing slope (no indentation, so the stiffest contact) goes to the top bin.
-``bandit_flat`` has one bucket: an online learner of the single best θ.
+quantiles over every episode of the calibration fixture
+(``tests/fixtures/calib_episodes.npz``), so no evaluation data sets them. The
+fixture also holds ``random_retry`` retries at other grasp depths, so the bins
+are not equal shares of the probes the bandit sees (``naive``'s first attempts
+fill the slope bins 0.20 / 0.44 / 0.36). A value on an edge goes to the upper
+bin; a missing slope (no indentation, so the stiffest contact) goes to the top
+bin. ``bandit_flat`` has one bucket: an online learner of the single best θ.
+A chunk's key holds the resolved arms and edges, and the run builds the bandit
+from them (``from_settings``).
 
 **Selection and update.** Each (bucket, arm) has a ``Beta(α, β)`` posterior,
 prior Beta(1, 1). ``select_arm`` draws one sample per arm with
@@ -33,15 +38,17 @@ RuVector mapping: ``ThompsonGripBandit`` ports ``MetaThompsonEngine``
 ``variance``, ``sample``, ``update``) of
 ``ruvector-domain-expansion/src/transfer.rs`` for one domain with uniform
 priors; the crate's ``ContextBucket`` (difficulty tier, category) becomes the
-probe bin pair, its ``ArmId`` strings an arm index. Deviation: the crate's
+probe bin pair, its ``ArmId`` strings an arm index. Deviations: the crate
+breaks a tie to the first arm, ours to a random tied arm; and the crate's
 ``BetaParams::sample`` is not a Beta draw. It maps one uniform u in [0.001,
-0.999) through a one-term normal approximation, mean ± std·√(−2 ln u), when α
-and β are both above 1, and through a power-law formula otherwise, which the
-Beta(1, 1) prior itself hits. On a Python transcription of that code (200 000
-draws) Beta(1, 1) gives mean 0.530 and variance 0.128 (exact: 0.500, 0.083),
-Beta(2, 5) variance 0.075 (exact 0.026), and Beta(1, 4) mean 0.388 (exact
-0.200). This port uses numpy's exact ``Generator.beta``. The crate's transfer
-priors, cost EMAs, and dual-path checks are not ported.
+0.999) through a one-term normal approximation when α and β are both above 1
+(mean − std·√(−2 ln u) for u < 0.5, mean + std·√(−2 ln(1 − u)) otherwise), and
+through a power-law formula otherwise, which the Beta(1, 1) prior itself hits.
+On a Python transcription of that code (200 000 draws) Beta(1, 1) gives mean
+0.530 and variance 0.128 (exact: 0.500, 0.083), Beta(2, 5) variance 0.075
+(exact 0.026), and Beta(1, 4) mean 0.388 (exact 0.200). This port uses numpy's
+exact ``Generator.beta``. The crate's transfer priors, cost EMAs, and dual-path
+checks are not ported.
 """
 
 from __future__ import annotations
@@ -179,6 +186,16 @@ class ThompsonGripBandit:
         self.beta = np.ones((n_buckets, len(self.arms)))
 
     @classmethod
+    def from_settings(cls, settings: Mapping[str, Sequence[float]]) -> ThompsonGripBandit:
+        """A fresh bandit from ``describe``'s resolved arms and edges."""
+        arms = [
+            replace(NAIVE, grip_force=float(g), close_speed=float(c))
+            for g in settings["grip_force"]
+            for c in settings["close_speed"]
+        ]
+        return cls(arms, settings["heft_edges"], settings["slope_edges"])
+
+    @classmethod
     def from_config(
         cls, contextual: bool, config: BanditConfig | None = None
     ) -> ThompsonGripBandit:
@@ -207,9 +224,13 @@ class ThompsonGripBandit:
     def posterior(self, bucket: int, arm: int) -> BetaParams:
         return BetaParams(float(self.alpha[bucket, arm]), float(self.beta[bucket, arm]))
 
+    def draws(self, bucket: int, rng: np.random.Generator) -> np.ndarray:
+        """One exact Beta draw per arm of ``bucket``."""
+        return rng.beta(self.alpha[bucket], self.beta[bucket])
+
     def select_arm(self, bucket: int, rng: np.random.Generator) -> int:
-        """One exact Beta draw per arm; the largest wins (ties: a random tied arm)."""
-        draws = rng.beta(self.alpha[bucket], self.beta[bucket])
+        """The arm with the largest draw (ties: a random tied arm)."""
+        draws = self.draws(bucket, rng)
         best = np.flatnonzero(draws == draws.max())
         return int(best[0]) if best.size == 1 else int(rng.choice(best))
 
@@ -266,11 +287,18 @@ class BanditPolicy:
         pass
 
 
-def make_policy(condition: str, rng: np.random.Generator) -> BanditPolicy:
-    """A fresh policy for one run of ``bandit`` or ``bandit_flat``."""
+def make_policy(
+    condition: str,
+    rng: np.random.Generator,
+    settings: Mapping[str, Sequence[float]] | None = None,
+) -> BanditPolicy:
+    """A fresh policy for one run of ``bandit`` or ``bandit_flat`` (``settings``: a
+    chunk key's resolved arms and edges; default: ``configs/bandit.toml``)."""
     if condition not in BANDIT_CONDITIONS:
         raise ValueError(f"condition must be one of {BANDIT_CONDITIONS}, got {condition!r}")
-    return BanditPolicy(ThompsonGripBandit.from_config(condition == "bandit"), rng)
+    if settings is None:
+        settings = describe(load_config(), condition == "bandit")
+    return BanditPolicy(ThompsonGripBandit.from_settings(settings), rng)
 
 
 def describe(config: BanditConfig, contextual: bool) -> dict[str, Any]:

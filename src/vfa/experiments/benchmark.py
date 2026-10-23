@@ -432,7 +432,8 @@ def _run_learner(
     from vfa.experiments.bandit import make_policy
 
     if job.condition in BANDIT_CONDITIONS:
-        policy = make_policy(job.condition, np.random.default_rng((job.seed, BANDIT_STREAM)))
+        rng = np.random.default_rng((job.seed, BANDIT_STREAM))
+        policy = make_policy(job.condition, rng, job.key["bandit"])  # the key's arms and edges
     else:
         policy = RetrievalPolicy(keys="context" if job.condition == "memory_ctx_only" else "full")
     core = CognitiveCore(policy)
@@ -802,9 +803,9 @@ def aggregate(
         "missing": {},
     }
     for condition in ALL_CONDITIONS:
-        jobs = plan_condition(config, condition, profile, out=out)
-        if condition in LEARNING_CONDITIONS and not any(Path(j.path).exists() for j in jobs):
+        if condition in LEARNING_CONDITIONS and not any((out / profile / condition).glob("*.json")):
             continue  # a learning condition that was never run on this --out
+        jobs = plan_condition(config, condition, profile, out=out)
         missing = [j.path for j in jobs if not _chunk_done(Path(j.path), j.key)]
         if missing:
             result["missing"][condition] = len(missing)

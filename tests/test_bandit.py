@@ -75,6 +75,18 @@ def test_draws_match_the_beta_mean_and_variance(alpha, beta):
     assert np.var(draws) == pytest.approx(p.variance(), rel=0.02)
 
 
+def test_the_selection_draws_match_each_arms_beta():
+    bandit = B.ThompsonGripBandit([NAIVE] * 3)
+    bandit.alpha[0] = [1.0, 2.0, 10.0]
+    bandit.beta[0] = [1.0, 5.0, 3.0]
+    rng = np.random.default_rng(0)
+    draws = np.array([bandit.draws(0, rng) for _ in range(20_000)])
+    for arm in range(3):
+        p = bandit.posterior(0, arm)
+        assert np.mean(draws[:, arm]) == pytest.approx(p.mean(), rel=0.02)
+        assert np.var(draws[:, arm]) == pytest.approx(p.variance(), rel=0.02)
+
+
 def test_the_bandit_finds_the_best_of_five_bernoulli_arms():
     probs = np.array([0.2, 0.35, 0.5, 0.65, 0.8])
     bandit = B.ThompsonGripBandit([NAIVE] * probs.size)
@@ -182,6 +194,13 @@ def test_make_policy_builds_a_fresh_bandit():
     first.bandit.record_outcome(0, 0, 1.0)
     assert B.make_policy("bandit", rng).bandit.alpha.sum() == first.bandit.alpha.size
     assert B.make_policy("bandit_flat", rng).bandit.n_buckets == 1
+    settings = B.describe(B.load_config(), contextual=True)
+    built = B.make_policy("bandit", rng, settings).bandit
+    assert built.arms == first.bandit.arms
+    np.testing.assert_array_equal(built.heft_edges, first.bandit.heft_edges)
+    np.testing.assert_array_equal(built.slope_edges, first.bandit.slope_edges)
+    small = {**settings, "grip_force": [2.0], "close_speed": [0.1]}
+    assert B.make_policy("bandit", rng, small).bandit.arms == [replace(NAIVE, grip_force=2.0)]
     with pytest.raises(ValueError):
         B.make_policy("memory_full", rng)
 
