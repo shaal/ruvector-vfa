@@ -139,3 +139,34 @@ First-attempt successes per class (20 cubes each, both seeds):
 | `memory_full` | 0.800 | **0.867** | **1.000** | **1.27** | **0.079** |
 
 The memory ends with 38 attempts and 3 consolidated skills. These are the first 30 situations of the `quick` run of §6 on one seed, so they repeat part of that in-sample result.
+
+## 8. Bandit baselines on `quick` (T17a)
+
+`uv run python -m vfa.experiments.benchmark --condition <c> --profile quick --workers 8` for `bandit` and `bandit_flat` (each first runs `naive`; 92 s and 69 s wall; one bandit chunk, a whole seed in order, took 65–69 s), and for `best_fixed`, `random_retry`, `memory_full`, and `memory_ctx_only` on the same code, then `aggregate --profile quick`. The bandits are reported, not gated. The `quick` seeds are T10's tuning seeds, so the numbers are in-sample; the arm grid and the bin counts (`configs/bandit.toml`) were fixed before the first bandit run and not changed. The re-runs of `memory_full` and `memory_ctx_only` reproduce §6 exactly.
+
+| Condition | success@1, 0–29 | success@1, 30–59 | success@1 | success@5 | attempts-to-success | break rate | drop rate |
+|---|---|---|---|---|---|---|---|
+| `naive` | 0.633 | 0.700 | 0.667 | 0.667 | 2.667 | 0.499 | 0.179 |
+| `best_fixed` | 0.717 | 0.633 | 0.675 | 0.692 | 2.575 | 0.239 | 0.408 |
+| `random_retry` | 0.633 | 0.700 | 0.667 | 0.900 | 1.983 | 0.419 | 0.092 |
+| `bandit` | 0.467 | 0.633 | 0.550 | 0.958 | 1.950 | 0.105 | 0.389 |
+| `bandit_flat` | 0.467 | 0.600 | 0.533 | 0.975 | 1.858 | 0.182 | 0.272 |
+| `memory_full` | 0.817 | **0.950** | **0.883** | **1.000** | **1.133** | **0.066** | **0.022** |
+
+Halves pool 60 situations each; the other columns are means over the two seeds (success@1 per seed: `bandit` 0.533 / 0.567, `bandit_flat` 0.567 / 0.500).
+
+First-attempt successes per class (20 cubes each, both seeds):
+
+| Class | `naive` | `memory_full` | `bandit` | `bandit_flat` |
+|---|---|---|---|---|
+| `brittle` | 12 | 15 | 7 | 4 |
+| `fragile_soft` | 0 | 16 | 11 | 8 |
+| `heavy_rigid` | 20 | 20 | 7 | 12 |
+| `heavy_slippery` | 9 | 15 | 8 | 8 |
+| `light_rigid` | 20 | 20 | 20 | 20 |
+| `slippery` | 19 | 20 | 13 | 12 |
+
+- **Memory beats a learner without similarity search.** `memory_full` against `bandit`: success@1 0.883 vs 0.550 (0.950 vs 0.633 on 30–59) and 1.133 vs 1.950 attempts-to-success. T18 measures the gap on the evaluation seeds.
+- **The bandits learn, but slowly.** `bandit` rises from 0.467 to 0.633 and `bandit_flat` from 0.467 to 0.600; both stay under `naive`'s 0.700 on 30–59. Every bucket starts with 24 arms at Beta(1, 1) and sees about 7 cubes per seed (60 / 9), so its first draws are close to random arms. `heavy_rigid`, which `naive` lifts 20 of 20 times, succeeds at the first attempt 7 of 20 times with `bandit`, and 0.389 of the bandit's attempts drop the cube (`naive` 0.179). A likely contributor, not tested: the three closing speeds, which T08 found to have no effect after the probe, triple the arms per grip.
+- **Retries pay off.** A failed arm loses posterior mass before the next draw, so the bandits reach success@5 0.958 and 0.975 (`random_retry` 0.900) with fewer breaks (0.105 and 0.182 against 0.419). Their attempts-to-success, 1.950 and 1.858, are close to `random_retry`'s 1.983.
+- **The probe buckets lower the break rate only.** They separate the classes only in part: 69 % of first attempts fall in their class's most common bucket (by class, 0.45 for `heavy_rigid` to 0.85 for `fragile_soft` and `heavy_slippery`). `bandit` against `bandit_flat`: success@1 0.550 vs 0.533, inside the seed spread (std 0.024 and 0.047), and break rate 0.105 vs 0.182.

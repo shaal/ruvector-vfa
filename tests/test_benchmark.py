@@ -84,6 +84,17 @@ def test_baselines():
         make_baseline("memory_full")
 
 
+def test_bandit_conditions_run_one_chunk_per_seed(tmp_path):
+    for condition, edges in (("bandit", 2), ("bandit_flat", 0)):
+        jobs = B.plan_condition(CONFIG, condition, "quick", out=tmp_path)
+        assert [(j.seed, j.start, j.end) for j in jobs] == [(500, 0, 60), (501, 0, 60)]
+        settings = jobs[0].key["bandit"]
+        assert len(settings["grip_force"]) == 8 and len(settings["close_speed"]) == 3
+        assert len(settings["heft_edges"]) == len(settings["slope_edges"]) == edges
+        assert jobs[0].theta is None
+    assert "bandit" not in B.plan_condition(CONFIG, "memory_full", "quick", out=tmp_path)[0].key
+
+
 def test_summarize_counts_situations_and_attempts():
     def rec(situation, attempt, result, cls="light_rigid"):
         return {
