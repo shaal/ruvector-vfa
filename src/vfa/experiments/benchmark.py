@@ -124,8 +124,21 @@ CODE_FILES: tuple[str, ...] = (
     "cognition/*.py",
 )
 # Learning conditions (T15 memory, T17a bandits): one chunk per seed, because what they
-# learned evolves within a seed.
-MEMORY_CONDITIONS: tuple[str, ...] = ("memory_full", "memory_ctx_only")
+# learned evolves within a seed. A memory condition's RetrievalPolicy settings (T18 adds
+# the four component ablations, ARCHITECTURE §9):
+MEMORY_POLICIES: dict[str, dict[str, Any]] = {
+    "memory_full": {},
+    "memory_ctx_only": {"keys": "context"},
+    "memory_no_reinforce": {"reinforce": False},
+    "memory_no_semantic": {"semantic": False},
+    "memory_no_probe": {"probe_trigger": False},
+    "memory_no_failure_bounds": {"failure_bounds": False},
+}
+# memory_frozen (T18's held-out run): memory_full learns on the warm-up seed's situations
+# (unscored), then freezes and is scored on the chunk's seed with no further writes.
+FROZEN = "memory_frozen"
+WARMUP = {"seed": 1000, "situations": 60}  # the first evaluation seed, fixed before any run
+MEMORY_CONDITIONS: tuple[str, ...] = (*MEMORY_POLICIES, FROZEN)
 LEARNING_CONDITIONS: tuple[str, ...] = MEMORY_CONDITIONS + BANDIT_CONDITIONS
 ALL_CONDITIONS: tuple[str, ...] = CONDITIONS + LEARNING_CONDITIONS
 BANDIT_STREAM = 0x42414E44  # "BAND": the bandit's generator is (seed, BANDIT_STREAM)
@@ -391,7 +404,7 @@ def run_chunk(job: Job) -> tuple[str, int, float]:
     situations = make_situations(job.seed, job.end, objects, start=job.start)
     save = None if job.save_episodes is None else Path(job.save_episodes)
     if job.condition in LEARNING_CONDITIONS:
-        records = _run_learner(job, env, skill, situations, save)
+        records = _run_learner(job, env, skill, situations, save, objects)
         payload = {"key": job.key, "records": records, "wall_s": time.perf_counter() - wall0}
         _write_json(Path(job.path), payload)
         return job.path, len(records), payload["wall_s"]
@@ -419,9 +432,10 @@ def _run_learner(
     skill: GraspLiftSkill,
     situations: Sequence[Situation],
     save: Path | None,
+    objects: OB.ObjectConfig | None = None,
 ) -> list[dict[str, Any]]:
     """A learning condition on one seed: a fresh memory (T15) or bandit (T17a),
-    situations in order.
+    situations in order (``memory_frozen``: after the warm-up seed's, unscored).
 
     The policy sees only the situation's opaque key and what the core's percepts
     hold; the scoring record (``attempt_record``) never reaches it.
@@ -435,8 +449,22 @@ def _run_learner(
         rng = np.random.default_rng((job.seed, BANDIT_STREAM))
         policy = make_policy(job.condition, rng, job.key["bandit"])  # the key's arms and edges
     else:
-        policy = RetrievalPolicy(keys="context" if job.condition == "memory_ctx_only" else "full")
+        policy = RetrievalPolicy(**MEMORY_POLICIES.get(job.condition, {}))
     core = CognitiveCore(policy)
+    if job.condition == FROZEN:
+        warmup = job.key["warmup"]
+        objects = OB.load_object_config() if objects is None else objects
+        for situation in make_situations(warmup["seed"], warmup["situations"], objects):
+            solve_situation(
+                env,
+                core,
+                skill,
+                job.max_attempts,
+                key=situation.key,
+                seed_of=lambda a, s=situation: env_seed(s.seed, s.index, a),
+                options={"object": situation.spec},
+            )
+        policy.freeze()
     records: list[dict[str, Any]] = []
     for situation in situations:
 
@@ -526,7 +554,11 @@ def plan_condition(
     fixed = None if condition == "naive" or theta is None else theta.to_dict()
     chunk = prof.situations if learner else CHUNK
     code = code_fingerprint()
-    extra = {}
+    extra: dict[str, Any] = {}
+    if condition == FROZEN:
+        if WARMUP["seed"] in seeds:
+            raise ValueError(f"{FROZEN} needs seeds other than its warm-up seed {WARMUP['seed']}")
+        extra["warmup"] = dict(WARMUP)
     if condition in BANDIT_CONDITIONS:
         from vfa.experiments import bandit
 
