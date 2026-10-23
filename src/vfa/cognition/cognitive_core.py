@@ -357,7 +357,7 @@ class CognitiveCore:
         """One attempt with System 2 at its triggers (refer to the module doc)."""
         if seed is None:
             raise ValueError("a seed is required: System 2 observes the cube before the attempt")
-        pick.validate_env(env.unwrapped)  # before anything is logged
+        skill.validate(env.unwrapped)  # before anything is logged
         trigger = FAILURE if previous is not None and not previous.success else START
         self.attempt += 1
         self._mode = CognitiveMode.DELIBERATIVE

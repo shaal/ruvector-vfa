@@ -14,7 +14,9 @@ A condition is a policy that picks θ for each attempt of a situation:
   non-adaptive baseline with the highest success@1.
 - ``random_retry``: ``naive`` first, then θ drawn uniformly within the
   ``SkillParams`` bounds on each retry (from a generator seeded by the
-  situation's opaque key and the attempt, so a re-run repeats it).
+  situation's opaque key and the attempt, so a re-run repeats it). On
+  pick-and-place (T19, ``place=True``) the place fields are drawn too, from a
+  second generator, so the lift fields' draws are the lift benchmark's.
 
 All get the same ``max_attempts``. With sensor noise each attempt sees its own
 noise, so a repeated θ can still end differently.
@@ -29,12 +31,12 @@ from __future__ import annotations
 
 import tomllib
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
 
-from vfa.skills.params import HIGH, LOW, SkillParams
+from vfa.skills.params import HIGH, LOW, PLACE_FIELDS, PLACE_HIGH, PLACE_LOW, SkillParams
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BEST_FIXED_PATH = REPO_ROOT / "configs" / "best_fixed.toml"
@@ -52,6 +54,7 @@ class Baseline:
 
     name: str
     fixed: SkillParams | None = None  # naive, best_fixed: the θ of every attempt
+    place: bool = False  # random_retry on pick-and-place: draw the place fields too
 
     def theta(self, key: int, attempt: int) -> SkillParams:
         if attempt < 1:
@@ -61,7 +64,11 @@ class Baseline:
         if attempt == 1:  # random_retry: naive first
             return NAIVE
         rng = np.random.default_rng((key, attempt, 0x52414E44))  # "RAND"
-        return SkillParams.from_vector(rng.uniform(LOW, HIGH))
+        theta = SkillParams.from_vector(rng.uniform(LOW, HIGH))
+        if not self.place:
+            return theta
+        place = np.random.default_rng((key, attempt, 0x504C4143)).uniform(PLACE_LOW, PLACE_HIGH)
+        return replace(theta, **dict(zip(PLACE_FIELDS, map(float, place), strict=True)))
 
 
 def load_best_fixed(path: str | Path = BEST_FIXED_PATH) -> SkillParams:
@@ -73,14 +80,17 @@ def load_best_fixed(path: str | Path = BEST_FIXED_PATH) -> SkillParams:
     return SkillParams.from_dict(data["theta"])
 
 
-def make_baseline(name: str, best_fixed: SkillParams | None = None) -> Baseline:
-    """The baseline ``name`` (``best_fixed`` loads ``configs/best_fixed.toml`` if not given)."""
+def make_baseline(
+    name: str, best_fixed: SkillParams | None = None, place: bool = False
+) -> Baseline:
+    """The baseline ``name`` (``best_fixed`` loads ``configs/best_fixed.toml`` if not given;
+    ``place``: pick-and-place, where ``random_retry`` also draws the place fields)."""
     if name == "naive":
         return Baseline("naive", NAIVE)
     if name == "best_fixed":
         return Baseline("best_fixed", best_fixed if best_fixed is not None else load_best_fixed())
     if name == "random_retry":
-        return Baseline("random_retry")
+        return Baseline("random_retry", place=place)
     raise ValueError(f"condition must be one of {CONDITIONS}, got {name!r}")
 
 

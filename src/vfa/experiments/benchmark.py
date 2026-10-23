@@ -59,6 +59,17 @@ failure's collapse would dominate it; the realistic pad noise adds a floor of
 about 19 N/s in quadrature). ``SLIP`` labels come from ground truth
 (``run_attempt`` labels an expired hold by the cube's height).
 
+**Pick-and-place** (T19, ``--task pick_place``): its own config and hash
+(``configs/benchmark_pick_place.toml``, ``benchmark_pick_place.sha256``, with the
+shared ``objects.toml``), the ``quick`` and ``calib`` profiles on seeds no lift
+profile uses, the output root ``runs/benchmark_pick_place``, and the conditions
+``naive``, ``random_retry`` (which also draws the place fields), and
+``memory_full`` (``PlaceEmbedder`` keys); other conditions are refused. Its
+metrics add the place-break, topple, and place-miss rates, and its peak force
+reads SQUEEZE, LIFT, and TRANSPORT (the jerk reads SQUEEZE and LIFT, as the
+lift's). The lift's chunks, keys, and
+metrics are as before.
+
 **Calibration** (``calibrate``). Every θ of the ``[grid]`` gets one attempt on
 each calib-profile situation; the highest pooled success@1 wins, ties go to the
 lower grip, then the lower lift acceleration (the rule was fixed before the
@@ -95,7 +106,7 @@ from vfa.experiments.baselines import (
     grid_thetas,
     make_baseline,
 )
-from vfa.memory.embeddings import STATS_PATH
+from vfa.memory.embeddings import PLACE_STATS_PATH, STATS_PATH
 from vfa.sim import objects as OB
 from vfa.sim.env import PandaVFAEnv
 from vfa.sim.sensors import REALISTIC_NOISE, SensorConfig, SensorNoise
@@ -107,6 +118,14 @@ OBJECTS_PATH = REPO_ROOT / "configs" / "objects.toml"
 HASH_PATH = REPO_ROOT / "configs" / "benchmark.sha256"
 FROZEN_FILES: tuple[Path, ...] = (CONFIG_PATH, OBJECTS_PATH, BEST_FIXED_PATH)
 DEFAULT_OUT = REPO_ROOT / "runs" / "benchmark"
+# The pick-and-place benchmark (T19): its own config and hash (over it and the
+# shared objects.toml), its own output root, and the conditions it supports.
+PICK_PLACE_CONFIG = REPO_ROOT / "configs" / "benchmark_pick_place.toml"
+PICK_PLACE_HASH = REPO_ROOT / "configs" / "benchmark_pick_place.sha256"
+PICK_PLACE_FILES: tuple[Path, ...] = (PICK_PLACE_CONFIG, OBJECTS_PATH)
+PICK_PLACE_OUT = REPO_ROOT / "runs" / "benchmark_pick_place"
+PICK_PLACE_CONDITIONS: tuple[str, ...] = ("naive", "random_retry", "memory_full")
+TASKS: tuple[str, ...] = ("lift", "pick_place")
 CHUNK = 15  # situations per chunk
 DEFAULT_DEADLINE_S = 400.0  # + the chunks already running (≤ about 100 s each)
 LATE_FROM = 20  # success_at_1_late: situations 21-60 (0-based index >= 20)
@@ -146,6 +165,8 @@ BLOCK = 6  # situations per stratified block (one cube per class)
 NOISES: dict[str, SensorNoise] = {"none": SensorNoise(), "realistic": REALISTIC_NOISE}
 G = 9.81
 _FORCE_PHASES = ("SQUEEZE", "LIFT", "HOLD")
+_PLACE_FORCE_PHASES = ("SQUEEZE", "LIFT", "TRANSPORT")  # pick_place: the carry's grip
+PLACE_RESULTS: tuple[str, ...] = ("PLACE_BREAK", "TOPPLE", "PLACE_MISS")
 _JERK_PHASES = ("SQUEEZE", "LIFT")
 logger = logging.getLogger(__name__)
 
@@ -171,9 +192,12 @@ class BenchmarkConfig:
 
 
 def load_benchmark_config(path: str | Path = CONFIG_PATH) -> BenchmarkConfig:
-    """Read ``configs/benchmark.toml`` (every key required, unknown keys are errors)."""
+    """Read ``configs/benchmark.toml`` (every key required, unknown keys are errors), or
+    the pick-and-place benchmark (``task = "pick_place"``, ``load_pick_place_config``)."""
     with open(path, "rb") as f:
         data = tomllib.load(f)
+    if data.get("benchmark", {}).get("task") == "pick_place":
+        return _pick_place_config(data, str(path))
     _keys(data, {"benchmark", "profiles", "grid"}, str(path))
     b = data["benchmark"]
     _keys(b, {"task", "max_attempts", "noise", "calib_seeds", "eval_seeds"}, "[benchmark]")
@@ -206,6 +230,44 @@ def load_benchmark_config(path: str | Path = CONFIG_PATH) -> BenchmarkConfig:
     _keys(grid, {"grip_force", "lift_accel"}, "[grid]")
     grid = {k: tuple(float(v) for v in grid[k]) for k in ("grip_force", "lift_accel")}
     return BenchmarkConfig(b["task"], b["max_attempts"], b["noise"], calib, evals, profiles, grid)
+
+
+def load_pick_place_config(path: str | Path = PICK_PLACE_CONFIG) -> BenchmarkConfig:
+    """Read ``configs/benchmark_pick_place.toml`` (T19)."""
+    config = load_benchmark_config(path)
+    if config.task != "pick_place":
+        raise ValueError(f"{path}: task must be 'pick_place', got {config.task!r}")
+    return config
+
+
+def _pick_place_config(data: Mapping[str, Any], where: str) -> BenchmarkConfig:
+    """The pick-and-place benchmark: a quick and a calib profile, no grid; its seeds
+    differ from every seed of the lift benchmark."""
+    _keys(data, {"benchmark", "profiles"}, where)
+    b = data["benchmark"]
+    _keys(b, {"task", "max_attempts", "noise", "calib_seeds"}, "[benchmark]")
+    if b["noise"] not in NOISES:
+        raise ValueError(f"[benchmark] noise must be one of {sorted(NOISES)}, got {b['noise']!r}")
+    if not (isinstance(b["max_attempts"], int) and b["max_attempts"] >= 1):
+        raise ValueError("[benchmark] max_attempts must be an int >= 1")
+    calib = _seeds(b["calib_seeds"])
+    profiles = {}
+    for name, p in data["profiles"].items():
+        _keys(p, {"seeds", "situations"}, f"[profiles.{name}]")
+        if not (isinstance(p["situations"], int) and p["situations"] >= 1):
+            raise ValueError(f"[profiles.{name}] situations must be an int >= 1")
+        profiles[name] = Profile(_seeds(p["seeds"]), p["situations"])
+    if set(profiles) != {"quick", "calib"}:
+        raise ValueError("the pick_place benchmark has exactly the quick and calib profiles")
+    if set(profiles["calib"].seeds) != set(calib):
+        raise ValueError("the calib profile must use the calibration seeds")
+    if set(profiles["quick"].seeds) & set(calib):
+        raise ValueError("quick and calib seeds must differ")
+    lift = load_benchmark_config(CONFIG_PATH)
+    used = {s for prof in lift.profiles.values() for s in prof.seeds}
+    if used & {s for prof in profiles.values() for s in prof.seeds}:
+        raise ValueError("pick_place seeds must differ from every lift benchmark seed")
+    return BenchmarkConfig("pick_place", b["max_attempts"], b["noise"], calib, (), profiles, {})
 
 
 def _keys(table: Mapping, expected: set[str], where: str) -> None:
@@ -279,12 +341,25 @@ def env_seed(seed: int, index: int, attempt: int) -> int:
 
 
 def make_env(config: BenchmarkConfig, **render: Any) -> PandaVFAEnv:
-    """The benchmark env: lift, osc at 500 Hz, the skill's carries, safety on
-    (``render``: ``render_mode`` and ``render_size`` for a video)."""
+    """The benchmark env: lift (or pick_place), osc at 500 Hz, the skill's carries,
+    safety on (``render``: ``render_mode`` and ``render_size`` for a video)."""
     sensors = SensorConfig(noise=NOISES[config.noise])
+    if config.task == "pick_place":
+        from vfa.skills import place
+
+        return place.make_env(sensors, **render)
     return PandaVFAEnv(
         "lift", "osc", step_hz=500, auto_carry=False, sensor_config=sensors, **render
     )
+
+
+def make_skill(task: str) -> GraspLiftSkill:
+    """The System 1 skill of ``task``."""
+    if task == "pick_place":
+        from vfa.skills.place import PickPlaceSkill
+
+        return PickPlaceSkill()
+    return GraspLiftSkill()
 
 
 # ------------------------------------------------------------------- attempts
@@ -313,7 +388,8 @@ def attempt_record(result: AttemptResult, situation: Situation, attempt: int) ->
     if ep is None:
         return record
     phases = np.asarray(ep.phases)[ep.arrays["phase"]]
-    grip = np.isin(phases, _FORCE_PHASES)
+    force_phases = _PLACE_FORCE_PHASES if ep.meta.get("task") == "pick_place" else _FORCE_PHASES
+    grip = np.isin(phases, force_phases)
     if np.any(grip):
         peak = float(np.max(np.sum(ep.arrays["cube_finger_force"][grip], axis=1)))
         need = spec.mass * (G + result.theta_final.lift_accel) / spec.friction[0]
@@ -379,20 +455,28 @@ class Job:
     max_attempts: int
     noise: str
     save_episodes: str | None = None
+    task: str = "lift"
 
 
 _WORKER: dict[str, Any] = {}
 
 
-def _worker_env(noise: str) -> tuple[PandaVFAEnv, GraspLiftSkill, OB.ObjectConfig]:
-    if _WORKER.get("noise") != noise:
+def _worker_env(
+    noise: str, task: str = "lift"
+) -> tuple[PandaVFAEnv, GraspLiftSkill, OB.ObjectConfig]:
+    if _WORKER.get("noise") != noise or _WORKER.get("task") != task:
         sensors = SensorConfig(noise=NOISES[noise])
-        _WORKER["env"] = PandaVFAEnv(
-            "lift", "osc", step_hz=500, auto_carry=False, sensor_config=sensors
-        )
-        _WORKER["skill"] = GraspLiftSkill()
+        if task == "pick_place":
+            from vfa.skills import place
+
+            _WORKER["env"] = place.make_env(sensors)
+        else:
+            _WORKER["env"] = PandaVFAEnv(
+                "lift", "osc", step_hz=500, auto_carry=False, sensor_config=sensors
+            )
+        _WORKER["skill"] = make_skill(task)
         _WORKER["objects"] = OB.load_object_config()
-        _WORKER["noise"] = noise
+        _WORKER["noise"], _WORKER["task"] = noise, task
     return _WORKER["env"], _WORKER["skill"], _WORKER["objects"]
 
 
@@ -400,7 +484,7 @@ def run_chunk(job: Job) -> tuple[str, int, float]:
     """Run one chunk and write its records (atomically). Returns (path, attempts, wall)."""
     logging.disable(logging.CRITICAL)  # thousands of attempts: keep worker logs quiet
     wall0 = time.perf_counter()
-    env, skill, objects = _worker_env(job.noise)
+    env, skill, objects = _worker_env(job.noise, job.task)
     situations = make_situations(job.seed, job.end, objects, start=job.start)
     save = None if job.save_episodes is None else Path(job.save_episodes)
     if job.condition in LEARNING_CONDITIONS:
@@ -411,7 +495,7 @@ def run_chunk(job: Job) -> tuple[str, int, float]:
     if job.theta is not None:
         policy = Baseline(job.condition, SkillParams.from_dict(job.theta))
     else:
-        policy = make_baseline(job.condition)
+        policy = make_baseline(job.condition, place=job.task == "pick_place")
     records: list[dict[str, Any]] = []
     for situation in situations:
 
@@ -448,6 +532,10 @@ def _run_learner(
     if job.condition in BANDIT_CONDITIONS:
         rng = np.random.default_rng((job.seed, BANDIT_STREAM))
         policy = make_policy(job.condition, rng, job.key["bandit"])  # the key's arms and edges
+    elif job.task == "pick_place":
+        from vfa.memory.embeddings import PlaceEmbedder
+
+        policy = RetrievalPolicy(embedder=PlaceEmbedder(), **MEMORY_POLICIES[job.condition])
     else:
         policy = RetrievalPolicy(**MEMORY_POLICIES.get(job.condition, {}))
     core = CognitiveCore(policy)
@@ -510,8 +598,11 @@ def _chunk_done(path: Path, key: Mapping[str, Any]) -> bool:
     return isinstance(doc, dict) and doc.get("key") == dict(key)
 
 
-def _config_hash() -> str:
-    """The hash of the situation-defining files (benchmark.toml, objects.toml)."""
+def _config_hash(task: str = "lift") -> str:
+    """The hash of the situation-defining files (benchmark.toml, objects.toml; for
+    pick_place, its own config and objects.toml)."""
+    if task == "pick_place":
+        return benchmark_hash(PICK_PLACE_FILES)
     return benchmark_hash((CONFIG_PATH, OBJECTS_PATH))
 
 
@@ -530,6 +621,8 @@ def code_fingerprint() -> str:
         if p.is_file() and not any(part.startswith(".") for part in p.relative_to(ASSETS_DIR).parts)
     )
     files.append(STATS_PATH)  # the memory keys' standardization (T11)
+    if PLACE_STATS_PATH.exists():
+        files.append(PLACE_STATS_PATH)  # the pick-and-place keys' (T19)
     versions = (
         f"mujoco {mujoco.__version__} numpy {np.__version__} gymnasium {gymnasium.__version__}"
     ).encode()
@@ -545,11 +638,16 @@ def plan_condition(
     save_episodes: str | None = None,
 ) -> list[Job]:
     """The chunks of one condition on one profile (optionally only some seeds)."""
+    out = _out(config, out)
     prof = config.profiles[profile]
     seeds = prof.seeds if seeds is None else tuple(seeds)
     learner = condition in LEARNING_CONDITIONS
     if not learner and condition not in CONDITIONS:
         raise ValueError(f"condition must be one of {ALL_CONDITIONS}, got {condition!r}")
+    if config.task == "pick_place" and condition not in PICK_PLACE_CONDITIONS:
+        raise ValueError(
+            f"the pick_place benchmark runs {PICK_PLACE_CONDITIONS}, not {condition!r}"
+        )
     theta = None if learner else make_baseline(condition).fixed
     fixed = None if condition == "naive" or theta is None else theta.to_dict()
     chunk = prof.situations if learner else CHUNK
@@ -570,7 +668,7 @@ def plan_condition(
         for start in range(0, prof.situations, chunk):
             end = min(start + chunk, prof.situations)
             key = {
-                "config": _config_hash(),
+                "config": _config_hash(config.task),
                 "code": code,
                 "condition": condition,
                 "theta": theta.to_dict() if theta is not None else None,
@@ -580,6 +678,8 @@ def plan_condition(
                 "max_attempts": config.max_attempts,
                 **extra,
             }
+            if config.task != "lift":
+                key["task"] = config.task
             path = out / profile / condition / f"seed{seed}_{start:03d}-{end:03d}.json"
             jobs.append(
                 Job(
@@ -593,9 +693,15 @@ def plan_condition(
                     config.max_attempts,
                     config.noise,
                     save_episodes,
+                    config.task,
                 )
             )
     return jobs
+
+
+def _out(config: BenchmarkConfig, out: Path) -> Path:
+    """The output root: pick_place never writes under the lift's default root."""
+    return PICK_PLACE_OUT if config.task == "pick_place" and out == DEFAULT_OUT else out
 
 
 def plan_grid(config: BenchmarkConfig, out: Path = DEFAULT_OUT) -> list[Job]:
@@ -723,6 +829,7 @@ def summarize(records: Sequence[dict], max_attempts: int) -> dict[str, Any]:
         "drop_rate": rate("DROP"),
         "slip_rate": rate("SLIP"),
         "safety_stop_rate": rate("SAFETY_STOP"),
+        **{f"{r.lower()}_rate": rate(r) for r in PLACE_RESULTS},
         "peak_force_excess": float(np.mean(excess)) if excess else None,
         "force_jerk": float(np.mean(jerk)) if jerk else None,
         "per_class": {
@@ -742,6 +849,7 @@ METRICS: tuple[str, ...] = (
     "drop_rate",
     "slip_rate",
     "safety_stop_rate",
+    *(f"{r.lower()}_rate" for r in PLACE_RESULTS),
     "peak_force_excess",
     "force_jerk",
     "attempts",
@@ -827,16 +935,23 @@ def aggregate(
     A condition with missing or stale chunks is listed under ``missing``; unless
     ``partial``, any missing chunk raises ``FileNotFoundError`` before writing.
     """
+    out = _out(config, out)
+    pick_place = config.task == "pick_place"
+    if pick_place:
+        frozen = benchmark_hash(PICK_PLACE_FILES)
+    else:
+        frozen = benchmark_hash() if BEST_FIXED_PATH.exists() else None
     result: dict[str, Any] = {
         "profile": profile,
-        "benchmark_hash": benchmark_hash() if BEST_FIXED_PATH.exists() else None,
+        "task": config.task,
+        "benchmark_hash": frozen,
         "code": code_fingerprint(),
         "max_attempts": config.max_attempts,
         "noise": config.noise,
         "conditions": {},
         "missing": {},
     }
-    for condition in ALL_CONDITIONS:
+    for condition in PICK_PLACE_CONDITIONS if pick_place else ALL_CONDITIONS:
         if condition in LEARNING_CONDITIONS and not any((out / profile / condition).glob("*.json")):
             continue  # a learning condition that was never run on this --out
         jobs = plan_condition(config, condition, profile, out=out)
@@ -962,14 +1077,33 @@ def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workers", type=int, default=default_workers())
     parser.add_argument("--deadline", type=float, default=DEFAULT_DEADLINE_S, help="seconds")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    _task_option(parser)
+
+
+def _task_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--task",
+        choices=TASKS,
+        default="lift",
+        help="lift (configs/benchmark.toml) or pick_place (configs/benchmark_pick_place.toml; "
+        "default --out runs/benchmark_pick_place)",
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    config = load_benchmark_config()
     command = argv[0] if argv and not argv[0].startswith("-") else "run"
     if argv and argv[0] == command:
         argv = argv[1:]
+    task_parser = argparse.ArgumentParser(add_help=False)
+    _task_option(task_parser)
+    task = task_parser.parse_known_args(argv)[0].task
+    pick_place = task == "pick_place"
+    config = load_pick_place_config() if pick_place else load_benchmark_config()
+    if pick_place and "--out" not in argv:
+        argv = [*argv, "--out", str(PICK_PLACE_OUT)]
+    if pick_place and command not in ("run", "aggregate", "freeze"):
+        raise SystemExit(f"the pick_place benchmark has no {command!r} command")
     if command == "run":
         args = build_parser().parse_args(argv)
         if args.profile not in config.profiles:
@@ -1014,9 +1148,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0 if done else 3
     if command == "aggregate":
         parser = argparse.ArgumentParser(description="aggregate chunk files into metrics.json")
-        parser.add_argument("--profile", default="full")
+        parser.add_argument("--profile", default="quick" if pick_place else "full")
         parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
         parser.add_argument("--partial", action="store_true", help="allow missing conditions")
+        _task_option(parser)
         args = parser.parse_args(argv)
         if args.profile not in config.profiles:
             raise SystemExit(f"--profile must be one of {sorted(config.profiles)}")
@@ -1038,6 +1173,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"wrote {args.out / args.profile / 'metrics.json'}")
         return 0
     if command == "freeze":
+        if pick_place:
+            PICK_PLACE_HASH.write_text(benchmark_hash(PICK_PLACE_FILES) + "\n")
+            print(f"wrote {PICK_PLACE_HASH}: {PICK_PLACE_HASH.read_text().strip()}")
+            return 0
         HASH_PATH.write_text(benchmark_hash() + "\n")
         print(f"wrote {HASH_PATH}: {HASH_PATH.read_text().strip()}")
         return 0

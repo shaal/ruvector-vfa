@@ -23,7 +23,7 @@ from vfa.sim import objects as OB
 from vfa.sim.env import PandaVFAEnv
 from vfa.sim.sensors import Event
 from vfa.skills import pick
-from vfa.skills.params import BOUNDS, FIELDS, HIGH, LOW, SkillParams
+from vfa.skills.params import ALL_FIELDS, BOUNDS, FIELDS, HIGH, LOW, SkillParams
 from vfa.skills.pick import (
     PROBE_DONE,
     SLIP_UNRECOVERED,
@@ -100,8 +100,8 @@ def phase_at(result: pick.AttemptResult, t: float) -> str:
 def test_params_bounds_and_defaults():
     theta = SkillParams()
     assert np.all(LOW <= theta.to_vector()) and np.all(theta.to_vector() <= HIGH)
-    assert tuple(BOUNDS) == FIELDS
-    for name in FIELDS:
+    assert tuple(BOUNDS) == ALL_FIELDS  # the lift fields, then T19's place fields
+    for name in ALL_FIELDS:
         low, high = BOUNDS[name]
         SkillParams(**{name: low})
         SkillParams(**{name: high})
@@ -126,7 +126,7 @@ def test_params_vector_and_json_round_trip():
     assert SkillParams.from_vector(v) == theta
     assert SkillParams.from_json(theta.to_json()) == theta
     assert SkillParams.from_dict(theta.to_dict()) == theta
-    assert list(theta.to_dict()) == list(FIELDS)
+    assert list(theta.to_dict()) == list(ALL_FIELDS)
     clipped = SkillParams.from_vector(HIGH + 1.0, clip=True)
     assert np.array_equal(clipped.to_vector(), HIGH)
     with pytest.raises(ValueError):

@@ -264,3 +264,76 @@ The frozen memory transfers to new cubes: its first attempts succeed in 59 of 60
 **Gentler, but not with less force.** `memory_full`'s force jerk (36.7 N/s) is lower than `random_retry`'s on every seed and close to `best_fixed`'s (38.3), but its peak-force excess is higher than `random_retry`'s (10.48 against 7.78 N). The excess comes from the slippery classes: 18.3 against 4.4 N on `slippery` and 16.0 against 7.7 N on `heavy_slippery`. A likely cause, not measured here: both classes slide in the probe (§3), so a `slippery` cube's strong neighbours include `heavy_slippery` successes at high grips. Memory then lifts the cube at the first attempt, with more force than it needs (the `slippery` panel above: 25 N per finger, an excess of 34.3 N). The force figure's panels were chosen for differing grips, so they show unusual cubes (`light_rigid` at 1.9 against 8.0 N per finger is 1 of memory's 30 `light_rigid` lifts). Over all successful attempts the median grips of `memory_full` and `random_retry` are equal on `light_rigid` and `heavy_rigid` (8.0 N), close on `fragile_soft` (1.9 and 1.8 N), lower for memory on `brittle` (6.0 and 8.0 N), and higher on `heavy_slippery` (20.9 and 12.0 N) and `slippery` (15.4 and 8.0 N). The realistic pad noise adds about 19 N/s to every jerk value in quadrature.
 
 **Without similarity search the bandit stays far behind.** Its first attempts do not improve measurably over the run: 0.533 on situations 1–20 and 0.600 on 21–60, a gain like `naive`'s on the same cubes (0.600 and 0.658). `bandit` lifts 0.578 of the cubes at the first attempt and needs 1.94 attempts (`random_retry` 2.21, `memory_full` 1.19). It breaks less than `random_retry` (0.137 against 0.468) but drops more (0.320 against 0.111).
+
+## 10. Pick-and-place (T19)
+
+The pick-and-place benchmark is `configs/benchmark_pick_place.toml`, hashed with `configs/objects.toml` in `configs/benchmark_pick_place.sha256`. The frozen lift benchmark is unchanged. The commands:
+
+```bash
+uv run python scripts/sweep_place.py --workers 8                                    # §10.1, 360 attempts
+uv run pytest -q tests/test_pick_place.py                                           # §10.2 (slow tests included)
+uv run python -m vfa.experiments.benchmark --task pick_place --condition random_retry \
+    --profile calib --workers 8 --save-episodes runs/pp_calib_episodes
+uv run python -m vfa.memory.embeddings fit-place --episodes runs/pp_calib_episodes  # configs/embedding_stats_place.npz
+uv run python -m vfa.experiments.benchmark --task pick_place --condition memory_full --profile quick --workers 8
+uv run python -m vfa.experiments.benchmark --task pick_place --condition random_retry --profile quick --workers 8
+uv run python -m vfa.experiments.benchmark aggregate --task pick_place               # §10.3
+```
+
+The place statistics come from the 249 calibration episodes (seeds 10 and 11). A second regeneration on the final code gave a byte-identical file.
+
+### 10.1 Place physics
+
+The sweep used hand-picked grips (§10.2), the realistic sensor noise, and 5 cubes per class at each place speed and release height. Each cell gives the successes, the place breaks, and the largest table-to-cube normal force in the release phases.
+
+| class | release height | 0.02 m/s | 0.05 m/s | 0.1 m/s |
+|---|---|---|---|---|
+| brittle | 0 cm | 5/5, 0, 7.8 N | 5/5, 0, 9.3 N | 5/5, 0, 11.6 N |
+| brittle | 0.5 cm | 5/5, 0, 11.2 N | 5/5, 0, 14.5 N | 5/5, 0, 17.3 N |
+| brittle | 1 cm | 4/5, 1, 19.7 N | 4/5, 1, 19.8 N | 3/5, 2, 20.4 N |
+| brittle | 1.5 cm | 2/5, 3, 25.4 N | 2/5, 3, 25.6 N | 2/5, 3, 28.6 N |
+| heavy_rigid | 0 cm | 5/5, 0, 18.6 N | 5/5, 0, 30.8 N | 5/5, 0, 36.1 N |
+| heavy_rigid | 1.5 cm | 5/5, 0, 59.6 N | 5/5, 0, 55.7 N | 5/5, 0, 60.2 N |
+| fragile_soft | 0 cm | 5/5, 0, 4.0 N | 5/5, 0, 4.6 N | 5/5, 0, 5.3 N |
+| fragile_soft | 1.5 cm | 5/5, 0, 6.5 N | 5/5, 0, 6.6 N | 5/5, 0, 6.6 N |
+
+All 300 attempts on the other five classes succeeded; the table lists their extremes. `brittle` broke at the place in 4 of 15 attempts with a 1 cm release and in 9 of 15 with 1.5 cm, never at 0 or 0.5 cm. The impact rule causes these breaks (D21): the finger forces in the release phases stayed at most 9.2 N on `brittle`, below every `brittle` break force (12–20 N). `fragile_soft` never broke: its soft contact kept the table force at or below 6.6 N. In this speed range the place speed changed a `brittle` cell by at most one cube. The largest tared wrist force was 17.0 N (`heavy_rigid`; the safety limit is 30 N). The longest attempt took 9.67 s of the 15 s limit. The default place θ (0.05 m/s, release on the table) is safe for every class.
+
+### 10.2 Hand-picked θ
+
+| class | grip [N per finger] | lift accel [m/s²] | places (10 seeds) |
+|---|---|---|---|
+| light_rigid | 2.0 | 0.3 | 10/10 |
+| heavy_rigid | 10.0 | 0.3 | 10/10 |
+| slippery | 12.0 | 0.3 | 10/10 |
+| fragile_soft | 1.5 | 0.3 | 10/10 |
+| heavy_slippery | 15.0 | 0.3 | 10/10 |
+| brittle | 3.0 | 0.3 | 10/10 |
+
+The grips are each class's best calibration grip (§3) with a margin for the transport. The other fields are the defaults. The target was at least 7 of 10 per class. The slowest θ corner (every speed and acceleration at its lower bound, 25 N, the deepest grasp, the slowest place) on the cube farthest from the target took 11.4 s (`tests/test_pick_place.py`).
+
+### 10.3 Memory against random retry (quick profile, seeds 600 and 601)
+
+Mean ± std over the 2 seeds, 60 situations each:
+
+| condition | success@1 | success@1, situations 21–60 | success@5 | attempts-to-success | break rate | place-break rate | drop rate | force jerk [N/s] | peak-force excess [N] |
+|---|---|---|---|---|---|---|---|---|---|
+| `naive` | 0.600 ± 0.047 | 0.588 ± 0.053 | 0.600 ± 0.047 | 3.000 ± 0.236 | 0.447 ± 0.058 | 0.051 ± 0.072 | 0.271 ± 0.048 | 40.0 ± 8.2 | 8.95 ± 0.19 |
+| `random_retry` | 0.600 ± 0.047 | 0.588 ± 0.053 | 0.842 ± 0.012 | 2.225 ± 0.059 | 0.439 ± 0.030 | 0.028 ± 0.018 | 0.125 ± 0.003 | 50.6 ± 2.2 | 8.67 ± 0.05 |
+| `memory_full` | **0.808 ± 0.035** | **0.887 ± 0.018** | **1.000 ± 0.000** | **1.250 ± 0.047** | 0.113 ± 0.024 | 0.014 ± 0.019 | 0.073 ± 0.026 | 31.2 ± 3.6 | 11.47 ± 1.08 |
+
+**Target met:** `memory_full` needs 1.250 attempts per situation and `random_retry` needs 2.225. Memory lifts and places every cube within 5 attempts, while `random_retry` solves 0.842 of them.
+
+**Disclosure.** The first `memory_full` run on these seeds treated `PLACE_BREAK` as no evidence about the grip. It needed 1.275 ± 0.012 attempts (success@5 0.992), and it failed one `brittle` cube five times at `naive`'s 8 N. After that run, a `PLACE_BREAK` at grip g started to bound the grip window like a `BREAK` (ARCHITECTURE §9). The table above is the run after the change; both runs beat `random_retry`. No other pick-and-place seeds were scored.
+
+### 10.4 Analysis
+
+**Place failures come from the grip, not from the place θ.** `naive`'s 15 place breaks are 3 `brittle` cubes (seed 600), each failing 5 times. Their break forces are 16.03–16.22 N, just above `naive`'s summed squeeze of 16 N. At the set-down the finger force rose to 16.09–16.24 N and broke them: the finger rule fired, not the impact rule (a probe that re-ran `naive`'s first attempt on every `brittle` cube of both quick seeds). `memory_full` keeps the default place fields, so its 2 place breaks come from the grip as well. Under `random_retry`, 7 of 248 attempts broke at the place.
+
+**`TOPPLE` and `PLACE_MISS` never happened.** None of the 710 quick attempts ended in either. The transport moves the hand on a straight path and the cube stays pinched at its center, so it lands flat within millimetres of the target. These failure modes exist in the env and in the skill's labels, but this benchmark does not reach them.
+
+**Where memory still fails.** 30 of `memory_full`'s 150 attempts failed: `brittle` 12 breaks, 5 drops, and 2 place breaks; `fragile_soft` 5 breaks; `heavy_slippery` 6 drops. As on the lift (§9.6), `brittle` is the hardest class, and memory grips harder than it needs: its peak-force excess (11.47 N) is above `random_retry`'s (8.67 N) while its force jerk is lower (31.2 against 50.6 N/s). Here the peak force is measured over SQUEEZE, LIFT, and TRANSPORT; the jerk is measured over SQUEEZE and LIFT, as on the lift.
+
+**The lift results did not change.** After every T19 change, the lift `quick` profile was re-run for `naive`, `best_fixed`, `random_retry`, `memory_full`, and `bandit`. All 1,143 attempts matched the run before T19: the result, every lift θ field, the probe features, the peak force, the jerk, and the sim time.
+
+**Two env limits from T07 are fixed** (`tests/test_pick_place.py`). A `heavy_rigid` cube that grazed the table 8 cm short of the target and was dragged there, still pinched, used to end in `TIMEOUT` on seeds 0–2. Now it ends in `SUCCESS`. In torque mode, a fast lift start slipped a `heavy_slippery` cube in the grip, and its held load spiked to 1.38 times the static load. A 5 mm lowering in the air then gave `PLACE`, with the cube 5.3 mm above the table. Now the carry stays `CARRY`.

@@ -86,13 +86,17 @@ recovers; T08 ends its own attempts). Pick-and-place: ``PLACED`` (resting flat
 within 2 cm of the target, unbroken, no pad contact) is not success on its own
 (T06). It is judged once, from ground truth at the cube's last touchdown: the
 first table contact after an airborne spell (more than ``REST_SINK_BAND`` up)
-that began with both fingers pinching it. If the cube left the fingers more
+that began with both fingers pinching it. While both fingers keep pinching it
+without a break, the touchdown moves with it (a heavy cube that grazed the
+table early and was dragged the rest of the way, T19); it stays where it is
+once the pinch breaks. If the cube left the fingers more
 than ``RELEASE_HEIGHT`` above the table before that touchdown, the result is
 ``DROP``; if the touchdown lies within ``PLACE_TOUCHDOWN_RADIUS`` of the
 target, ``SUCCESS``; else the cube was pushed there: no success, and the
 episode runs on (``PLACED`` comes once, so it cannot succeed). A nudge after
 the touchdown cannot change the verdict. Pick-and-place also fails on ``BREAK``
-(``PLACE_BREAK`` in or after a release phase, until a new carry starts),
+(``PLACE_BREAK`` in or after a release phase, until a new carry starts; its break
+monitor also reads the table's normal force on the cube, T19's impact rule),
 ``DROP`` as in lift, and ``TOPPLE`` (in or after a release phase: resting, no
 pad contact, no face within 10° of flat, for 0.2 s). Every task ends on
 ``SAFETY_STOP``: one reported between steps (T09, through ``events.report``)
@@ -107,10 +111,12 @@ both pads touch under a squeeze and the ee has risen ``CARRY_RISE`` above its
 lowest point since the grasp closed. In a carry, at most ``RELEASE_HEIGHT``
 above that point, a lowering (osc: the commanded target moves down, so payload
 sag is not one; torque: the ee sits ``CARRY_RISE`` below the carry's highest
-point and the held load fell below ``SETDOWN_LOAD`` of the carry's peak) is a
-set-down, ``PLACE``, and an open is a release, ``RELEASE``; both call
-``unwatch_slip()``, since the table taking the load is not a drop (T06). Higher
-up the carry stays watched, so an open there makes the cube's fall a ``DROP``.
+point and the held load stayed below ``SETDOWN_LOAD`` of the carry's reference
+load for ``SETDOWN_S``; the reference is the highest level the load held for
+``SETDOWN_WINDOW_S``, so a load spike cannot set it, T19) is a set-down,
+``PLACE``, and an open is a release, ``RELEASE``; both call ``unwatch_slip()``,
+since the table taking the load is not a drop (T06). Higher up the carry stays
+watched, so an open there makes the cube's fall a ``DROP``.
 From ``PLACE`` a raise with both pads touching (osc: commanded; torque:
 ``CARRY_RISE`` above the set-down's lowest point) starts a new carry and an
 open releases; a squeeze in ``RELEASE`` goes back to ``GRASP``, so a later
@@ -173,6 +179,7 @@ before. The env owns an ``EpisodeRecorder`` per episode (every
 from __future__ import annotations
 
 import math
+from collections import deque
 from collections.abc import Mapping
 from typing import Any
 
@@ -252,9 +259,14 @@ RELEASE_HEIGHT = 0.02
 # touchdown (the first table contact after an airborne spell that began with both
 # fingers pinching it, more than REST_SINK_BAND up) lies within this of it.
 PLACE_TOUCHDOWN_RADIUS = 0.04  # m
-# Torque mode: a set-down also needs the table to take the load (held load below this
-# fraction of the carry's peak); payload sag lowers the ee 3+ mm but keeps the load.
+# Torque mode: a set-down also needs the table to take the load: the held load stays
+# below this fraction of the carry's reference load for SETDOWN_S. The reference is the
+# highest level the load held for SETDOWN_WINDOW_S in this carry, so a spike (a fast lift
+# start slipped a heavy cube in the grip: 1.4-2.8x the static load) cannot set it (T19);
+# payload sag lowers the ee 3+ mm but keeps the load.
 SETDOWN_LOAD = 0.95
+SETDOWN_S = 0.004  # two control ticks: shorter than the slip detector's 6 ms debounce
+SETDOWN_WINDOW_S = 0.1
 # MuJoCo's solver warmstart, off until the robot first touches the cube (refer to reset).
 _WARMSTART = int(mujoco.mjtDisableBit.mjDSBL_WARMSTART)
 # Ground-truth events: for scoring and logs, reported under info["privileged"].
@@ -473,7 +485,7 @@ class PandaVFAEnv(gym.Env):
         self.osc = OperationalSpaceController(model, data, ids=ids)
         self.gripper = Gripper(model, data, ids)
         self.gripper.open()
-        self.monitor = OB.BreakMonitor(model, data, spec, ids)
+        self.monitor = OB.BreakMonitor(model, data, spec, ids, impact=self.task == "pick_place")
         self.sensors = SensorSuite(model, data, ids, self.sensor_config, rng=sensor_rng)
         self.events = EventDetector(self.event_config)
         self.supervisor = None
@@ -494,10 +506,15 @@ class PandaVFAEnv(gym.Env):
         self._target_vz = 0.0  # the step's commanded target z speed (osc) [m/s]
         self._carry_peak = 0.0  # highest ee rise in the current carry (torque set-down)
         self._place_low = 0.0  # lowest ee rise in the current set-down (torque re-lift)
-        self._carry_load = 0.0  # highest held load in the current carry (torque set-down)
+        self._carry_load = (
+            0.0  # the carry's reference load (torque set-down, refer to SETDOWN_LOAD)
+        )
+        self._load_window: deque[float] = deque()  # the carry's loads of the last SETDOWN_WINDOW_S
+        self._unloaded = 0  # ticks in a row with the load under the set-down line
         self._airborne = False  # a pinched cube left the table (above REST_SINK_BAND) ...
         self._touchdown_xy: np.ndarray | None = None  # ... and came down here,
         self._touchdown_release = 0.0  # ... having left the fingers this high [m]
+        self._dragged = False  # pinched without a break since the touchdown: it follows
         self._place_judged = False  # PLACED was scored
         self._delivered = 0  # events in self.events.events already reported
         # No solver warmstart until the robot first touches the cube (module doc, D14).
@@ -716,14 +733,20 @@ class PandaVFAEnv(gym.Env):
         cube_rise = float(priv.cube_pos[2]) - priv.rest_z
         if float(np.sum(forces)) > 0.0:
             self._contact_rise = cube_rise
+        pinched = bool(forces[0] > 0.0 and forces[1] > 0.0)
         contacts = self._cube_contacts()
         if contacts & 1:  # on the table
             if self._airborne:
                 self._airborne = False
                 self._touchdown_xy = priv.cube_pos[:2].copy()
                 self._touchdown_release = self._contact_rise
-        elif cube_rise > OB.REST_SINK_BAND and forces[0] > 0.0 and forces[1] > 0.0:
+                self._dragged = pinched
+            elif self._dragged and pinched:  # still pinched since the touchdown: it
+                self._touchdown_xy = priv.cube_pos[:2].copy()  # comes down here (T19)
+        elif cube_rise > OB.REST_SINK_BAND and pinched:
             self._airborne = True  # carried: a push or a toss never starts a spell
+        if not pinched:
+            self._dragged = False  # the pinch broke: the touchdown stays where it is
         if self._untouched and contacts & 2:
             self.model.opt.disableflags &= ~_WARMSTART
             self._untouched = False
@@ -817,15 +840,18 @@ class PandaVFAEnv(gym.Env):
             lowered, raised = vz < 0.0, vz > 0.0
         else:  # the measured motion, CARRY_RISE past the turning point (a hysteresis:
             # the ee rebounds at 5-6 mm/s when a set-down stops, ≤ 0.15 mm), and for a
-            # set-down the table taking the load (payload sag lowers the ee, not the load)
-            lowered = (
-                rise < self._carry_peak - CARRY_RISE
-                and frame.load < SETDOWN_LOAD * self._carry_load
+            # set-down the table taking the load for SETDOWN_S (payload sag lowers the
+            # ee, not the load)
+            if suite.slip.watching:
+                self._track_carry_load(float(frame.load))
+                below = frame.load < SETDOWN_LOAD * self._carry_load
+                self._unloaded = self._unloaded + 1 if below else 0
+            lowered = rise < self._carry_peak - CARRY_RISE and self._unloaded >= round(
+                SETDOWN_S / self.dt
             )
             raised = rise > self._place_low + CARRY_RISE
         if suite.slip.watching:
             self._carry_peak = max(self._carry_peak, rise)
-            self._carry_load = max(self._carry_load, float(frame.load))
         elif self._placing:
             self._place_low = min(self._place_low, rise)
         if self._released:
@@ -848,11 +874,25 @@ class PandaVFAEnv(gym.Env):
             elif both and raised:
                 suite.watch_slip()  # raised again: a new carry
                 self._placing = False
-                self._carry_peak, self._carry_load = rise, float(frame.load)
+                self._start_carry(rise)
             return
         if self._squeezing and both and rise >= CARRY_RISE:  # GRASP
             suite.watch_slip()
-            self._carry_peak, self._carry_load = rise, float(frame.load)
+            self._start_carry(rise)
+
+    def _start_carry(self, rise: float) -> None:
+        self._carry_peak, self._carry_load = rise, 0.0
+        self._load_window.clear()
+        self._unloaded = 0
+
+    def _track_carry_load(self, load: float) -> None:
+        """Raise the carry's reference load to the lowest load of the last
+        ``SETDOWN_WINDOW_S`` (a level the load held that long; refer to SETDOWN_LOAD)."""
+        window = self._load_window
+        window.append(load)
+        if len(window) > round(SETDOWN_WINDOW_S / self.dt):
+            window.popleft()
+        self._carry_load = max(self._carry_load, min(window))
 
     def _next_phase(self) -> str:
         if not self.events.in_grasp:

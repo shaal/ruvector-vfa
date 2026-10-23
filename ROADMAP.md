@@ -352,7 +352,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~80 min + run time.
   - depends: T17a
 
-- [ ] **T19 — Pick-and-place extension with force-aware placing**
+- [x] **T19 — Pick-and-place extension with force-aware placing**
   - Goal: the third task from the brief, with a contact-rich place phase.
   - Deliverables:
     - Extend the skill: `TRANSPORT → PLACE_DESCEND → CONTACT (F/T unload detection) → RELEASE → RETREAT`. New θ dims: `place_speed`, `release_height`.

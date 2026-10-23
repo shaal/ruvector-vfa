@@ -4,6 +4,7 @@ Usage::
 
     uv run vfa demo --quick            # 30 cubes, about 30 s
     uv run vfa demo --seed 501         # 60 cubes of another benchmark seed
+    uv run vfa demo --quick --task pick_place   # pick-and-place (T19), about 1 min
 
 The demo prints a banner naming each RuVector component and the active
 backend, then runs three conditions on the same cubes of one benchmark seed
@@ -32,6 +33,13 @@ memory (``memory/``, ``MemorySystem.save``), the plots (``plots/``), and
 ``report.html`` (``vfa.viz.report``). ``--video`` also writes ``attempts.gif``:
 every attempt of the first cube that needed a retry, with a force overlay.
 
+``--task pick_place`` (T19) runs the same three conditions on the
+pick-and-place benchmark (``configs/benchmark_pick_place.toml``, default seed
+600): ``PickPlaceSkill`` carries each cube to the place target and sets it
+down, ``random_retry`` also draws the place fields, and memory uses the
+pick-and-place keys (``PlaceEmbedder``). The tables add the place failures
+(``pbrk`` = PLACE_BREAK, ``topl`` = TOPPLE, ``pmis`` = PLACE_MISS).
+
 RuVector mapping: the banner lists the mapping of ARCHITECTURE §10. The memory
 phase runs ``CognitiveCore`` (``cognitive_core::CognitiveCore``) with
 ``RetrievalPolicy`` over ``EpisodicMemory`` and ``SemanticMemory``
@@ -58,11 +66,21 @@ from vfa.sim.env import PRIVILEGED_EVENTS
 QUICK_SITUATIONS = 30
 FULL_SITUATIONS = 60
 DEFAULT_SEED = 500  # the first quick-profile seed (T10's tuning seeds)
+DEFAULT_SEEDS = {"lift": DEFAULT_SEED, "pick_place": 600}  # pick_place: its quick seed
 BASELINES = ("naive", "random_retry")
 CONDITIONS = (*BASELINES, "memory_full")
 SPLIT = 15  # cubes per background baseline job
 RUNS = B.REPO_ROOT / "runs"
-SHORT = {"SUCCESS": "ok", "BREAK": "brk", "SLIP": "slp", "DROP": "drp", "MISS": "miss"}
+SHORT = {
+    "SUCCESS": "ok",
+    "BREAK": "brk",
+    "SLIP": "slp",
+    "DROP": "drp",
+    "MISS": "miss",
+    "PLACE_BREAK": "pbrk",
+    "TOPPLE": "topl",
+    "PLACE_MISS": "pmis",
+}
 
 BANNER = """\
 ruvector-vfa demo: a force-aware Franka Panda that remembers how cubes felt
@@ -77,19 +95,28 @@ backend: {backend} (a Python mirror; the Rust crate runs only with T22's --backe
 def build_parser(prog: str = "vfa demo") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=prog, description=__doc__.splitlines()[0])
     parser.add_argument("--quick", action="store_true", help=f"{QUICK_SITUATIONS} cubes")
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="benchmark seed")
+    parser.add_argument(
+        "--seed", type=int, default=None, help="benchmark seed (default 500; pick_place 600)"
+    )
+    parser.add_argument("--task", choices=B.TASKS, default="lift", help="lift or pick_place")
     parser.add_argument("--video", action="store_true", help="a GIF of the first retried cube")
     parser.add_argument("--out", type=Path, default=None, help="run directory")
     parser.add_argument("--workers", type=int, default=B.default_workers())
     return parser
 
 
-def run_baseline(condition: str, seed: int, start: int, end: int) -> list[dict[str, Any]]:
+def load_config(task: str) -> B.BenchmarkConfig:
+    return B.load_pick_place_config() if task == "pick_place" else B.load_benchmark_config()
+
+
+def run_baseline(
+    condition: str, seed: int, start: int, end: int, task: str = "lift"
+) -> list[dict[str, Any]]:
     """One background job: a baseline on cubes [start, end) of ``seed``."""
     logging.disable(logging.CRITICAL)
-    config = B.load_benchmark_config()
-    env, skill, objects = B._worker_env(config.noise)
-    policy = B.make_baseline(condition)
+    config = load_config(task)
+    env, skill, objects = B._worker_env(config.noise, task)
+    policy = B.make_baseline(condition, place=task == "pick_place")
     records: list[dict[str, Any]] = []
     for situation in B.make_situations(seed, end, objects, start=start):
         records += B.run_situation(env, skill, policy, situation, config.max_attempts)
@@ -109,7 +136,6 @@ def run_memory(
     from vfa.cognition.cognitive_core import CognitiveCore
     from vfa.cognition.retry import solve_situation
     from vfa.sim import objects as OB
-    from vfa.skills.pick import GraspLiftSkill
 
     if video:
         from vfa.viz.video import FrameGrab
@@ -117,7 +143,7 @@ def run_memory(
         env: Any = FrameGrab(B.make_env(config, render_mode="rgb_array", render_size=(240, 320)))
     else:
         env = B.make_env(config)
-    skill = GraspLiftSkill()
+    skill = B.make_skill(config.task)
     core = CognitiveCore(policy, log_path=run / "handoffs.jsonl")
     episodes = run / "episodes"
     records: list[dict[str, Any]] = []
@@ -201,18 +227,19 @@ def cube_table(by_condition: dict[str, list[dict[str, Any]]], n: int) -> str:
     return "\n".join(lines)
 
 
-def summary_table(metrics: dict[str, dict[str, Any]], n: int) -> str:
+def summary_table(metrics: dict[str, dict[str, Any]], n: int, place: bool = False) -> str:
     half = n // 2
     head = (
         f"{'condition':<14}{'success@1':>10}{f'2nd half ({half}-{n - 1})':>20}"
         f"{'success@5':>11}{'attempts':>10}{'break rate':>12}"
-    )
+    ) + (f"{'place break':>13}" if place else "")
     lines = [head]
     for c in CONDITIONS:
         m = metrics[c]
         lines.append(
             f"{c:<14}{m['success_at_1']:>10.3f}{m['second_half']:>20.3f}"
             f"{m['success_at_k']:>11.3f}{m['attempts_to_success']:>10.2f}{m['break_rate']:>12.3f}"
+            + (f"{m['place_break_rate']:>13.3f}" if place else "")
         )
     return "\n".join(lines)
 
@@ -232,7 +259,9 @@ def _hide_ground_truth(record: logging.LogRecord) -> bool:
 
 def main(argv: Sequence[str] | None = None, prog: str = "vfa demo") -> int:
     args = build_parser(prog).parse_args(argv)
-    config = B.load_benchmark_config()
+    config = load_config(args.task)
+    if args.seed is None:
+        args.seed = DEFAULT_SEEDS[args.task]
     n = QUICK_SITUATIONS if args.quick else FULL_SITUATIONS
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run = args.out if args.out is not None else RUNS / f"demo-{stamp}"
@@ -258,15 +287,27 @@ def main(argv: Sequence[str] | None = None, prog: str = "vfa demo") -> int:
 
 
 def _run(args: argparse.Namespace, config: B.BenchmarkConfig, run: Path, n: int) -> int:
-    policy = S2.RetrievalPolicy()
+    pick_place = config.task == "pick_place"
+    if pick_place:
+        from vfa.memory.embeddings import PlaceEmbedder
+
+        policy = S2.RetrievalPolicy(embedder=PlaceEmbedder())
+    else:
+        policy = S2.RetrievalPolicy()
     print(BANNER.format(backend=type(policy.memory.semantic.index).__name__), flush=True)
+    task = "pick-and-place: carry each cube to the target and set it down" if pick_place else "lift"
     print(
-        f"\n{n} cubes of benchmark seed {args.seed} (6 hidden classes; the arm sees none), "
-        f"up to {config.max_attempts} attempts each. Baselines run in the background.\n",
+        f"\n{n} cubes of {config.task} benchmark seed {args.seed} (6 hidden classes; the arm "
+        f"sees none), up to {config.max_attempts} attempts each ({task}). "
+        "Baselines run in the background.\n",
         flush=True,
     )
     t0 = time.perf_counter()
-    jobs = [(c, args.seed, s, min(s + SPLIT, n)) for c in BASELINES for s in range(0, n, SPLIT)]
+    jobs = [
+        (c, args.seed, s, min(s + SPLIT, n), config.task)
+        for c in BASELINES
+        for s in range(0, n, SPLIT)
+    ]
     with ProcessPoolExecutor(max_workers=max(1, min(args.workers, len(jobs)))) as pool:
         futures = [(c, pool.submit(run_baseline, c, *rest)) for c, *rest in jobs]
         print("memory_full: empty memory, System 2 retrieves at every probe\n", flush=True)
@@ -286,6 +327,7 @@ def _run(args: argparse.Namespace, config: B.BenchmarkConfig, run: Path, n: int)
     B._write_json(
         run / "metrics.json",
         {
+            "task": config.task,
             "seed": args.seed,
             "situations": n,
             "max_attempts": config.max_attempts,
@@ -305,11 +347,14 @@ def _run(args: argparse.Namespace, config: B.BenchmarkConfig, run: Path, n: int)
             "conditions": metrics,
         },
     )
+    legend = "brk = break, slp = slip, drp = drop"
+    if pick_place:
+        legend += ", pbrk = place break, topl = topple, pmis = place miss"
     print(
-        "\nPer cube (class revealed now; attempts: results, "
-        f"brk = break, slp = slip, drp = drop):\n{cube_table(by_condition, n)}"
+        f"\nPer cube (class revealed now; attempts: results, {legend}):\n"
+        f"{cube_table(by_condition, n)}"
     )
-    print(f"\nSummary ({n} cubes, seed {args.seed}):\n{summary_table(metrics, n)}")
+    print(f"\nSummary ({n} cubes, seed {args.seed}):\n{summary_table(metrics, n, pick_place)}")
     mem, naive = metrics["memory_full"], metrics["naive"]
     verdict = "beats" if mem["second_half"] > naive["second_half"] else "does not beat"
     print(

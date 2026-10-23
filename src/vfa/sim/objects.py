@@ -23,7 +23,10 @@ contact, and the finger pads (μ = 1) would hide a slippery cube's friction.
 (``finger_cube_forces``, left + right) exceeds the spec's ``break_force``, the
 cube is ``broken``. The monitor paints it red (``BROKEN_RGBA``), and the caller
 ends the attempt as a failure (``BREAK``). The threshold is on the **sum**: a
-face-on squeeze of ``f`` N per finger loads it with ``2f``.
+face-on squeeze of ``f`` N per finger loads it with ``2f``. With ``impact=True``
+(pick-and-place, T19) the cube also breaks when the table's summed normal force
+on it (``table_cube_force``) exceeds ``break_force``: a fast set-down or a
+release above the table that lands too hard. The lift never turns it on.
 
 **Perception** (``observe_cube``): the observed pose is the true pose plus
 optional Gaussian noise (``PerceptionNoise``; σ = 0 in benchmark v1). The
@@ -68,6 +71,7 @@ from vfa.sim.scene import (
     set_cube_mass,
     set_cube_size,
     set_cube_solref,
+    table_cube_force,
 )
 
 logger = logging.getLogger(__name__)
@@ -443,7 +447,8 @@ class BreakMonitor:
     last physics step, so ``break_time``, read from ``data.time``, is up to
     one step late). With ``substeps > 1`` it sees only the last substep of
     each tick. Once the
-    summed finger-to-cube normal force exceeds ``spec.break_force``, ``broken``
+    summed finger-to-cube normal force exceeds ``spec.break_force`` (with
+    ``impact``, or the table's normal force on the cube does), ``broken``
     stays ``True``, the cube turns ``BROKEN_RGBA``, and the caller must end the
     attempt as a failure. A cube with ``break_force=None`` never breaks.
     ``apply_object`` restores the color for the next episode; make a new
@@ -456,6 +461,8 @@ class BreakMonitor:
         data: mujoco.MjData,
         spec: ObjectSpec,
         ids: SceneIds | None = None,
+        *,
+        impact: bool = False,
     ) -> None:
         if not isinstance(spec, ObjectSpec):
             raise TypeError(f"spec must be an ObjectSpec, got {type(spec).__name__}")
@@ -471,12 +478,21 @@ class BreakMonitor:
         # (left, right) finger-to-cube normal forces of the last update() [N]; the
         # T06 recorder logs them, so an attempt walks the contacts once per tick.
         self.last_forces: tuple[float, float] = (0.0, 0.0)
+        self.impact = bool(impact)
+        self.peak_table = 0.0  # largest table-to-cube normal force seen (impact only) [N]
 
     def update(self) -> bool:
-        """Read the finger forces and apply the rule. Returns ``broken``."""
+        """Read the finger forces (and with ``impact`` the table's) and apply the rule.
+        Returns ``broken``."""
         left, right = finger_cube_forces(self.model, self.data, self.ids)
         self.last_forces = (left, right)
-        return self.check(left + right, float(self.data.time))
+        broken = self.check(left + right, float(self.data.time))
+        if self.impact:
+            table = table_cube_force(self.model, self.data, self.ids)
+            self.peak_table = max(self.peak_table, table)
+            if not broken and self.threshold is not None and table > self.threshold:
+                broken = self._break(table, float(self.data.time), "table")
+        return broken
 
     def check(self, force_sum: float, time: float) -> bool:
         """Apply the rule to a summed finger normal force [N] at ``time`` [s]."""
@@ -486,15 +502,19 @@ class BreakMonitor:
             self.peak_force = force_sum
         if self.broken or self.threshold is None or not force_sum > self.threshold:
             return self.broken
+        return self._break(force_sum, time, "finger")
+
+    def _break(self, force: float, time: float, source: str) -> bool:
         self.broken = True
         self.break_time = time
-        self.break_load = force_sum
+        self.break_load = force
         self.model.geom_rgba[self.ids.cube_geom] = BROKEN_RGBA
         logger.info(
-            "[S1] BREAK %s at t=%.3f s: finger force %.2f N > %.2f N",
+            "[S1] BREAK %s at t=%.3f s: %s force %.2f N > %.2f N",
             self.class_name,
             self.break_time,
-            force_sum,
+            source,
+            force,
             self.threshold,
         )
         return True
