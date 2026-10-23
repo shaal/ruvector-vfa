@@ -204,7 +204,7 @@ The memory stores **what was available at each decision point**, not only the fi
 | `key_pre` | context: observed cube pose and size, initial joint config | attempt start |
 | `key_probe` | context + probe force features | after `PROBE_DONE` |
 | `key_retry` | context + previous attempt's full force profile + its failure mode one-hot | retry after a failure |
-| `full_embedding` | context + probe + force + trajectory + outcome | consolidation, analysis |
+| `full_embedding` | context + probe + force + trajectory + outcome | analysis |
 
 Feature groups:
 
@@ -222,12 +222,14 @@ Each group is standardized with statistics fitted on the committed calibration f
 |---|---|---|
 | `WorkingMemory` | the current attempt's percepts, probe features, retrieved hits | one attempt; bounded; evicts least important |
 | `EpisodicMemory` | every attempt: keys, full embedding, θ, outcome, failure mode, situation id, `utility` | whole run; persisted |
-| `SemanticMemory` | skill prototypes: centroid vector → named `Skill` (mean trajectory, mean θ, confidence) | consolidated every N situations |
+| `SemanticMemory` | skill prototypes: centroid vector → skill name, mean θ, member ids (`SkillLibrary` holds the `Skill`: mean trajectory, confidence) | consolidated every N situations |
 
 ### 5.3 Reinforcement and consolidation
 
 - Every episodic record has `utility ∈ [0, 1]` (initial 0.5). When System 2 uses a record and the attempt succeeds, the record's utility rises; on failure it falls. Ranking score: `similarity × (0.5 + utility)`, divided instead of multiplied when the similarity is negative, so a higher utility always ranks higher. At utility 0.5 the score is the similarity.
-- `SkillLibrary.consolidate()` clusters successful episodes on `key_probe` (no class labels), learns one `Skill` per cluster with `learn_from_demonstration` (averaged trajectory and θ, `confidence = 1 − 1/(n+1)`), and stores the centroid in `SemanticMemory`. `improve_skill(name, feedback)` adjusts confidence after each use (clamped to [0, 1]), exactly as in the Rust crate.
+- `SkillLibrary.consolidate(memory)` clusters successful episodes on `key_probe` (no class labels), learns one `Skill` per cluster with `learn_from_demonstration` (averaged trajectory and θ, `confidence = 1 − 1/(n+1)`), and stores the centroid in `SemanticMemory`. `improve_skill(name, feedback)` adjusts confidence after each use (clamped to [0, 1]), as in the Rust crate, except that non-finite feedback is rejected.
+
+**As built in T13** (`vfa/memory/skill_learning.py`). Clustering is a cosine leader pass (a success joins a cluster at similarity ≥ 0.8 to its centroid), then spherical k-means passes that dissolve clusters under 3 members. 3 is the smallest minimum that keeps the fixture within the test's cap of 12 clusters (two per class, so tiny clusters cannot inflate purity; 2 gives 14, none 22). Both values were set on this fixture, the threshold after a preview showed similarities next to the labels, so the numbers are in-sample. Skills average θ as chosen (`record.theta`). On the 95 fixture successes: 12 clusters, purity 0.821, where chance for the same sizes is 0.369 (p99 0.432). Over 200 shuffled insertion orders, purity stays ≥ 0.705, but 6 % exceed the cap (up to 14 clusters). On random halves (200 per seed, 5 seeds), the median is 0.72–0.73 with 6 clusters, and 26–36 % fall below 0.7.
 
 ### 5.4 Backend seam
 
@@ -342,7 +344,7 @@ Source read: `github.com/ruvnet/ruvector`, `crates/ruvector-robotics/src/cogniti
 | `memory.WorkingMemory` | `memory_system::WorkingMemory`, `MemoryItem` | same rule: evict the least-important item when full |
 | `memory.EpisodicMemory` | `memory_system::EpisodicMemory`, `Episode { percepts, actions, reward, timestamp }` | Rust `recall_similar` flattens `percepts` and uses a **raw dot product** → we store one unit-norm key as the single percept. One instance per key type. Rust `Episode` has no id/success: θ JSON + record id go in `actions`, signed outcome in `reward`, payloads in a Python side table |
 | `memory.SemanticMemory` | `memory_system::SemanticMemory` | name → embedding; `find_similar` is also dot product |
-| `memory.SkillLibrary`, `Skill`, `Demonstration` | `skill_learning::{SkillLibrary, Skill, Demonstration}` | same averaging and `confidence = 1 − 1/(n+1)`; `improve_skill` clamps to [0, 1]. Rust `Skill.trajectory` is `Vec<[f64; 3]>`; θ lives in a side table |
+| `memory.SkillLibrary`, `Skill`, `Demonstration` | `skill_learning::{SkillLibrary, Skill, Demonstration}` | same averaging (summed in demo order, then divided) and `confidence = 1 − 1/(n+1)`; `improve_skill` clamps to [0, 1] but rejects non-finite feedback (Rust stores NaN for NaN and clamps ±inf); names must be non-empty strings and timestamps integers. Rust `Skill.trajectory` is `Vec<[f64; 3]>`; in the Rust backend (T22) θ lives in a side table. `consolidate` is ours |
 | `cognition.CognitiveCore`, `CognitiveMode`, `CognitiveState` | `cognitive_core::{CognitiveCore, CognitiveMode::{Reactive, Deliberative, Emergency}, CognitiveState}` | same modes and states. Rust `think()` picks the most confident percept; our System 2 replaces it with `RetrievalPolicy` |
 | `cognition.Percept`, `Decision`, `Outcome` | same names | `Outcome { success, reward, description }` |
 | `control.SafetySupervisor` | `CognitiveMode::Emergency` (priority 255 in `think`) | |

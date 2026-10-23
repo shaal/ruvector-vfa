@@ -226,7 +226,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~45 min. Tests < 15 s.
   - depends: T11
 
-- [ ] **T13 — SkillLibrary: consolidate successes into skill prototypes**
+- [x] **T13 — SkillLibrary: consolidate successes into skill prototypes**
   - Goal: semantic memory — compress many episodes into a few reusable skills.
   - Deliverables:
     - `vfa/memory/skill_learning.py`, mirroring `ruvector-robotics::cognitive::skill_learning`: `Demonstration`, `Skill`, `SkillLibrary` with `learn_from_demonstration(name, demos)` (average the EE trajectories and θ; `confidence = 1 − 1/(n+1)`), `execute_skill`, `improve_skill(name, feedback)` (clamped to [0, 1]).
