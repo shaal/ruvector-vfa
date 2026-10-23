@@ -46,8 +46,9 @@ situations, mean ± std over seeds) to ``docs/figures/t18_learning_curves.png``.
 **Figures.** ``figures`` re-runs ``random_retry`` and ``memory_full`` on the
 first evaluation seed with every episode saved (``<out>/t18_figures``), checks
 that their records equal the scored chunks' (but for wall times), and draws,
-per class, the first cube that both conditions lift: the summed pad force of
-each one's successful attempt (``docs/figures/t18_force_profiles.png``).
+per class, the first cube that both conditions lift with different grips (else
+the first that both lift): the summed pad force of each one's successful attempt
+(``docs/figures/t18_force_profiles.png``).
 
 RuVector mapping: none; this module runs the conditions (ARCHITECTURE §10 maps
 the memory and cognition types they use).
@@ -333,7 +334,7 @@ def learning_figure(full: Mapping[str, Any], n: int, max_attempts: int, path: Pa
         ax.set_xticks(x)
         ax.grid(alpha=0.3)
     a1.set_ylim(0.0, 1.05)
-    a1.legend(fontsize=8, loc="lower right")
+    a2.legend(fontsize=8, loc="upper right")  # every curve (a1 leaves out random_retry)
     fig.suptitle(
         "Learning curves on the 3 evaluation seeds (mean ± std over seeds; "
         "random_retry's first attempts are naive's)",
@@ -404,7 +405,14 @@ def force_figure(
         if not both:
             ax.set_title(f"{cls}: no cube lifted by both", fontsize=9)
             continue
-        i = both[0]
+        differ = [
+            j
+            for j in both
+            if wins["memory_full"][j]["theta_final"]["grip_force"]
+            != wins["random_retry"][j]["theta_final"]["grip_force"]
+        ]
+        i = (differ or both)[0]
+        top = 0.0
         for c, color in (
             ("random_retry", COLORS["random_retry"]),
             ("memory_full", COLORS["memory_full"]),
@@ -412,9 +420,11 @@ def force_figure(
             r = wins[c][i]
             ep = load_episode(episodes / c / f"seed{seed}_s{i:03d}_a{r['attempt']}.npz")
             t, _ = _squeeze_time(ep)
+            force = ep.arrays["finger_force"].sum(axis=1)
+            top = max(top, float(force[(t >= -1.0) & (t <= 3.0)].max()))
             ax.plot(
                 t,
-                ep.arrays["finger_force"].sum(axis=1),
+                force,
                 color=color,
                 lw=1.6,
                 label=(
@@ -423,6 +433,7 @@ def force_figure(
                 ),
             )
         ax.set_title(f"{cls}, situation {i}", fontsize=9)
+        ax.set_ylim(0.0, top * 1.45)  # room for the legend above the curves
         ax.legend(fontsize=7, loc="upper left")
         ax.grid(alpha=0.3)
         ax.set_xlim(-1.0, 3.0)
@@ -431,8 +442,8 @@ def force_figure(
     for ax in axes[:, 0]:
         ax.set_ylabel("summed pad force [N]")
     fig.suptitle(
-        f"Force profiles of the successful attempt, seed {seed}: the first cube of each class "
-        "that both conditions lift (excess: peak summed force − m(g + a)/μ)",
+        f"Force profiles of the successful attempt, seed {seed}: per class, the first cube both "
+        "conditions lift with different grips (excess: peak summed force − m(g + a)/μ)",
         fontsize=10,
     )
     fig.tight_layout()
@@ -476,7 +487,8 @@ def print_tables(result: Mapping[str, Any]) -> None:
         for m, d in (("success_at_1_late", 3), ("attempts_to_success", 2), ("break_rate", 3)):
             lo, hi = comp["interval"][m]
             cells.append(f"{_pm(comp['diff'][m], d)} [{lo:+.{d}f}, {hi:+.{d}f}]")
-        print(f"| `{c}` | {' | '.join(cells)} | {comp['verdict']} |")
+        label = comp["verdict"] if c in ABLATIONS else _versus(comp["verdict"])
+        print(f"| `{c}` | {' | '.join(cells)} | {label} |")
     held = result["profiles"]["heldout"]
     print(
         "\n| Held-out (seed 2000) | success@1 | success@1, 21–60 | success@5 "
@@ -506,6 +518,16 @@ def print_tables(result: Mapping[str, Any]) -> None:
         f"{g['peak_force_excess'][0]:.2f} vs {g['peak_force_excess'][1]:.2f} N, "
         f"force jerk {g['force_jerk'][0]:.1f} vs {g['force_jerk'][1]:.1f} N/s"
     )
+
+
+def _versus(verdict: str) -> str:
+    """The verdict of a non-component comparison, read for ``memory_full``."""
+    return {
+        "it helps": "memory_full better",
+        "it hurts": "memory_full worse",
+        "mixed": "mixed",
+        "no measurable effect": "no measurable difference",
+    }[verdict]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
