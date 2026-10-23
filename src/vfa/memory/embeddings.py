@@ -105,7 +105,7 @@ START_ARM_QPOS: tuple[float, ...] = (0.0, -0.03493, 0.0, -1.922671, 0.0, 1.88774
 CONTACT_N = 0.2  # summed pad force above this is a contact (a pad's flag turns on at 0.2 N)
 FAILURES: tuple[str, ...] = ("BREAK", "UNDERGRIP", "MISS", "OTHER")
 OUTCOMES: tuple[str, ...] = ("SUCCESS", *FAILURES)
-UNDERGRIP = frozenset({"SLIP", "DROP"})
+UNDERGRIP = frozenset({"SLIP", "DROP", "UNDERGRIP"})  # the merged label is one too
 DIMS: dict[str, int] = {
     "context": 12,
     "probe": 6,

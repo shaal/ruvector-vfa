@@ -262,6 +262,8 @@ Typical attempt (logged to `runs/<id>/handoffs.jsonl` and the console):
 
 A failed attempt adds `[S2] trigger=failure key_retry …` and a retry with an adapted θ.
 
+**As built in T14** (`vfa/cognition/cognitive_core.py`). `CognitiveCore.run_attempt` resets the env to show System 2 the cube, decides θ, and calls T08's `run_attempt`, which resets again with the same seed (same cube; a reset costs about 11–12 ms). The failure trigger is the start of the retry. Escalations reach System 2 through the skill's callback between two `env.step` calls; fields that already ran keep their values, and an unchanged θ goes back as `None`. Percepts are observable only: probe and escalation percepts carry an `EpisodeView` of the attempt so far; a retry sees an `ObservedAttempt` (result with SLIP and DROP merged, θ, probe, an `EpisodeView`), never the recorded episode, which holds the hidden class. A safety stop sets `EMERGENCY` until the next attempt. Each step is a line in `handoffs.jsonl` (with `log_path`). The stub policy returns the naive θ at start and keeps the θ in force later.
+
 ---
 
 ## 7. Retrieval-augmented adaptation and retry (T15)
@@ -345,8 +347,8 @@ Source read: `github.com/ruvnet/ruvector`, `crates/ruvector-robotics/src/cogniti
 | `memory.EpisodicMemory` | `memory_system::EpisodicMemory`, `Episode { percepts, actions, reward, timestamp }` | Rust `recall_similar` flattens `percepts` and uses a **raw dot product** → we store one unit-norm key as the single percept. One instance per key type. Rust `Episode` has no id/success: θ JSON + record id go in `actions`, signed outcome in `reward`, payloads in a Python side table |
 | `memory.SemanticMemory` | `memory_system::SemanticMemory` | name → embedding; `find_similar` is also dot product |
 | `memory.SkillLibrary`, `Skill`, `Demonstration` | `skill_learning::{SkillLibrary, Skill, Demonstration}` | same averaging (summed in demo order, then divided) and `confidence = 1 − 1/(n+1)`; `improve_skill` clamps to [0, 1] but rejects non-finite feedback (Rust stores NaN for NaN and clamps ±inf); names must be non-empty strings and timestamps integers. Rust `Skill.trajectory` is `Vec<[f64; 3]>`; in the Rust backend (T22) θ lives in a side table. `consolidate` is ours |
-| `cognition.CognitiveCore`, `CognitiveMode`, `CognitiveState` | `cognitive_core::{CognitiveCore, CognitiveMode::{Reactive, Deliberative, Emergency}, CognitiveState}` | same modes and states. Rust `think()` picks the most confident percept; our System 2 replaces it with `RetrievalPolicy` |
-| `cognition.Percept`, `Decision`, `Outcome` | same names | `Outcome { success, reward, description }` |
+| `cognition.CognitiveCore`, `CognitiveMode`, `CognitiveState` | `cognitive_core::{CognitiveCore, CognitiveMode::{Reactive, Deliberative, Emergency}, CognitiveState}` | same modes, states, attention threshold, and `learn` rule. Rust `think()` picks the most confident percept; ours asks the System 2 policy (`RetrievalPolicy` from T15) about the newest. Rust's mode is fixed in its config; ours follows the triggers |
+| `cognition.Percept`, `Decision`, `Outcome` | same names | `Outcome { success, reward, description }` with reward +1 / −1. A `Percept` carries a mapping (Rust: `Vec<f64>`), a `Decision` carries θ (Rust: an `ActionCommand`) |
 | `control.SafetySupervisor` | `CognitiveMode::Emergency` (priority 255 in `think`) | |
 | `memory.backend.MemoryBackend` | — (adapter seam) | `NumpyBackend` now; `RuVectorBackend` in T22 |
 
