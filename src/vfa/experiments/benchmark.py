@@ -26,8 +26,9 @@ class, or the cube) and retries a failed situation up to ``max_attempts``
 times.
 
 **Chunks** (CLAUDE.md, Runtime limits). A chunk is one condition × one seed ×
-``CHUNK`` situations (a memory condition, T15: one chunk per seed, because its
-memory evolves in situation order), written to
+``CHUNK`` situations (a learning condition, the memory of T15 or the bandits of
+T17a: one chunk per seed, because what it learned evolves in situation order),
+written to
 ``runs/benchmark/<profile>/<condition>/seed<s>_<start>-<end>.json`` with the
 records of every attempt. A run skips chunks whose file already exists with
 the same key (the situation files' hash, a fingerprint of the code that runs
@@ -37,9 +38,12 @@ chunks it had started) stops submitting chunks, and the same command continues
 the work. ``--workers`` runs chunks in parallel processes (default
 ``min(8, cpu − 2)``). ``aggregate`` reads the chunks and writes
 ``runs/benchmark/<profile>/metrics.json``; it refuses a condition with missing
-chunks unless ``--partial`` (a memory condition with no chunk file at all is
-left out). A memory condition's run first runs ``naive`` on the same seeds and
+chunks unless ``--partial`` (a learning condition with no chunk file at all is
+left out). A learning condition's run first runs ``naive`` on the same seeds and
 then prints success@1 per half and per block of ``BLOCK`` situations for both.
+The bandits (``bandit``, ``bandit_flat``; ``vfa.experiments.bandit``) draw from a
+generator seeded by the benchmark seed, and their chunk keys carry their arms and
+bin edges (``configs/bandit.toml`` is not in the frozen hash).
 
 **Metrics** (per seed, then mean ± sample std over seeds): success@1 and
 success@k (k = ``max_attempts``) over situations, and success@1 over
@@ -81,6 +85,7 @@ from typing import Any
 
 import numpy as np
 
+from vfa.experiments.bandit import BANDIT_CONDITIONS
 from vfa.experiments.baselines import (
     BEST_FIXED_PATH,
     CONDITIONS,
@@ -113,13 +118,17 @@ CODE_FILES: tuple[str, ...] = (
     "control/*.py",
     "skills/*.py",
     "experiments/baselines.py",
+    "experiments/bandit.py",
     "experiments/benchmark.py",
     "memory/*.py",
     "cognition/*.py",
 )
-# Memory conditions (T15): one chunk per seed, because memory evolves within a seed.
+# Learning conditions (T15 memory, T17a bandits): one chunk per seed, because what they
+# learned evolves within a seed.
 MEMORY_CONDITIONS: tuple[str, ...] = ("memory_full", "memory_ctx_only")
-ALL_CONDITIONS: tuple[str, ...] = CONDITIONS + MEMORY_CONDITIONS
+LEARNING_CONDITIONS: tuple[str, ...] = MEMORY_CONDITIONS + BANDIT_CONDITIONS
+ALL_CONDITIONS: tuple[str, ...] = CONDITIONS + LEARNING_CONDITIONS
+BANDIT_STREAM = 0x42414E44  # "BAND": the bandit's generator is (seed, BANDIT_STREAM)
 BLOCK = 6  # situations per stratified block (one cube per class)
 NOISES: dict[str, SensorNoise] = {"none": SensorNoise(), "realistic": REALISTIC_NOISE}
 G = 9.81
@@ -381,8 +390,8 @@ def run_chunk(job: Job) -> tuple[str, int, float]:
     env, skill, objects = _worker_env(job.noise)
     situations = make_situations(job.seed, job.end, objects, start=job.start)
     save = None if job.save_episodes is None else Path(job.save_episodes)
-    if job.condition in MEMORY_CONDITIONS:
-        records = _run_memory(job, env, skill, situations, save)
+    if job.condition in LEARNING_CONDITIONS:
+        records = _run_learner(job, env, skill, situations, save)
         payload = {"key": job.key, "records": records, "wall_s": time.perf_counter() - wall0}
         _write_json(Path(job.path), payload)
         return job.path, len(records), payload["wall_s"]
@@ -404,14 +413,15 @@ def run_chunk(job: Job) -> tuple[str, int, float]:
     return job.path, len(records), payload["wall_s"]
 
 
-def _run_memory(
+def _run_learner(
     job: Job,
     env: PandaVFAEnv,
     skill: GraspLiftSkill,
     situations: Sequence[Situation],
     save: Path | None,
 ) -> list[dict[str, Any]]:
-    """A memory condition on one seed: a fresh memory, situations in order (T15).
+    """A learning condition on one seed: a fresh memory (T15) or bandit (T17a),
+    situations in order.
 
     The policy sees only the situation's opaque key and what the core's percepts
     hold; the scoring record (``attempt_record``) never reaches it.
@@ -419,9 +429,14 @@ def _run_memory(
     from vfa.cognition.cognitive_core import CognitiveCore
     from vfa.cognition.retry import solve_situation
     from vfa.cognition.system2 import RetrievalPolicy
+    from vfa.experiments.bandit import make_policy
 
-    keys = "context" if job.condition == "memory_ctx_only" else "full"
-    core = CognitiveCore(RetrievalPolicy(keys=keys))
+    if job.condition in BANDIT_CONDITIONS:
+        rng = np.random.default_rng((job.seed, BANDIT_STREAM))
+        policy = make_policy(job.condition, rng, job.key["bandit"])  # the key's arms and edges
+    else:
+        policy = RetrievalPolicy(keys="context" if job.condition == "memory_ctx_only" else "full")
+    core = CognitiveCore(policy)
     records: list[dict[str, Any]] = []
     for situation in situations:
 
@@ -504,13 +519,18 @@ def plan_condition(
     """The chunks of one condition on one profile (optionally only some seeds)."""
     prof = config.profiles[profile]
     seeds = prof.seeds if seeds is None else tuple(seeds)
-    memory = condition in MEMORY_CONDITIONS
-    if not memory and condition not in CONDITIONS:
+    learner = condition in LEARNING_CONDITIONS
+    if not learner and condition not in CONDITIONS:
         raise ValueError(f"condition must be one of {ALL_CONDITIONS}, got {condition!r}")
-    theta = None if memory else make_baseline(condition).fixed
+    theta = None if learner else make_baseline(condition).fixed
     fixed = None if condition == "naive" or theta is None else theta.to_dict()
-    chunk = prof.situations if memory else CHUNK
+    chunk = prof.situations if learner else CHUNK
     code = code_fingerprint()
+    extra = {}
+    if condition in BANDIT_CONDITIONS:
+        from vfa.experiments import bandit
+
+        extra["bandit"] = bandit.describe(bandit.load_config(), condition == "bandit")
     jobs = []
     for seed in seeds:
         for start in range(0, prof.situations, chunk):
@@ -524,6 +544,7 @@ def plan_condition(
                 "start": start,
                 "end": end,
                 "max_attempts": config.max_attempts,
+                **extra,
             }
             path = out / profile / condition / f"seed{seed}_{start:03d}-{end:03d}.json"
             jobs.append(
@@ -782,9 +803,9 @@ def aggregate(
         "missing": {},
     }
     for condition in ALL_CONDITIONS:
+        if condition in LEARNING_CONDITIONS and not any((out / profile / condition).glob("*.json")):
+            continue  # a learning condition that was never run on this --out
         jobs = plan_condition(config, condition, profile, out=out)
-        if condition in MEMORY_CONDITIONS and not any(Path(j.path).exists() for j in jobs):
-            continue  # a memory condition that was never run on this --out
         missing = [j.path for j in jobs if not _chunk_done(Path(j.path), j.key)]
         if missing:
             result["missing"][condition] = len(missing)
@@ -935,7 +956,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if skipped:
                 print(f"note: {skipped} chunks are done already; their episodes are not saved")
         t0 = time.perf_counter()
-        if args.condition in MEMORY_CONDITIONS:  # "naive" first: the learning report's bar
+        if args.condition in LEARNING_CONDITIONS:  # "naive" first: the learning report's bar
             naive = plan_condition(config, "naive", args.profile, args.seed, args.out)
             if not run_jobs(naive, args.workers, args.deadline):
                 return 3
@@ -943,7 +964,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         done = run_jobs(jobs, args.workers, left)
         if done:
             by_seed = load_records(jobs)
-            if args.condition in MEMORY_CONDITIONS:
+            if args.condition in LEARNING_CONDITIONS:
                 print_learning(config, args.condition, args.profile, args.out, args.seed)
             for seed, records in sorted(by_seed.items()):
                 m = summarize(records, config.max_attempts)
@@ -969,10 +990,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 3
         for name, c in result["conditions"].items():
             print(
-                f"{name:13s} success@1 {_pm(c['success_at_1'])}"
+                f"{name:15s} success@1 {_pm(c['success_at_1'])}"
                 f"  success@k {_pm(c['success_at_k'])}"
                 f"  late {_pm(c['success_at_1_late'])}"
                 f"  attempts {_pm(c['attempts_to_success'])}"
+                f"  break {_pm(c['break_rate'])}"
             )
         if result["missing"]:
             print(f"missing chunks: {result['missing']}")

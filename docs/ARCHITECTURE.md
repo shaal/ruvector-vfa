@@ -308,7 +308,7 @@ On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so 
 
 ---
 
-## 9. Experiments and metrics (T10, T15, T18)
+## 9. Experiments and metrics (T10, T15, T17a, T18)
 
 **Conditions**
 
@@ -317,6 +317,8 @@ On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so 
 | `naive` | one fixed default θ; retries repeat it |
 | `best_fixed` | the single θ with the best calibration-seed success (strongest non-adaptive baseline) |
 | `random_retry` | `naive` first, then random θ within bounds; same retry budget as memory |
+| `bandit` | Thompson sampling over 24 grip × closing-speed arms per probe bucket (heft load × closure slope, 3 × 3 bins); decides at `PROBE_DONE`; learns from success and failure across situations, with no similarity search (T17a) |
+| `bandit_flat` | `bandit` with one bucket: an online learner of the single best θ (T17a) |
 | `memory_ctx_only` | full retrieval policy, but every key uses context features only — **the force ablation** |
 | `memory_full` | full retrieval policy with force features |
 | `memory_full+residual` | plus the learned residual (T21) |
@@ -338,6 +340,8 @@ On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so 
 
 **As built in T10** (`vfa/experiments/benchmark.py`, `baselines.py`; numbers in `docs/RESULTS.md`). Situations come in blocks of one cube per class, each block in a seeded order; a policy sees only an opaque situation key, never the index. Each attempt resets the env with a seed from (seed, situation, attempt), so the realistic sensor noise is paired too. Runs are chunked (condition × seed × 15 situations), resumable, and keyed by a code fingerprint. With the five T04 classes one grid θ reached 0.800 success@1, so T10 added `brittle`; on the frozen six-class benchmark `best_fixed` (5 N, picked on the calibration seeds at 0.675) gives 0.650 on the evaluation seeds, while each class alone has a θ at 1.00. `random_retry` reaches 0.828 success@5 in 2.21 attempts. `quick` is two tuning seeds (500, 501) with 60 situations each; `heldout` (2000) serves T18.
 
+**As built in T17a** (`vfa/experiments/bandit.py`; `configs/bandit.toml`, outside the frozen hash). The bandit is a System 2 policy in `CognitiveCore`, so it sees the probe at the same point as memory and runs `naive` θ before it. The grips are log-spaced over the bounds (0.5–25 N), because the classes' best calibration grips span 1–12 N; the three closing speeds come from the task's default 8 × 3 grid, although after the probe T08 found the same peak and no break at 0.05 and 0.5 m/s. The bucket edges are terciles of the calibration fixture. An attempt that reached its probe credits its arm before the next draw; an attempt that ended before it credits nothing. One seed runs in order, with a generator seeded by the benchmark seed. Numbers: `docs/RESULTS.md` §8.
+
 ---
 
 ## 10. Mapping to `ruvector-robotics`
@@ -353,6 +357,7 @@ Source read: `github.com/ruvnet/ruvector`, `crates/ruvector-robotics/src/cogniti
 | `cognition.CognitiveCore`, `CognitiveMode`, `CognitiveState` | `cognitive_core::{CognitiveCore, CognitiveMode::{Reactive, Deliberative, Emergency}, CognitiveState}` | same modes, states, attention threshold, and `learn` rule. Rust `think()` picks the most confident percept; ours asks the System 2 policy (`RetrievalPolicy` from T15) about the newest. Rust's mode is fixed in its config; ours follows the triggers |
 | `cognition.Percept`, `Decision`, `Outcome` | same names | `Outcome { success, reward, description }` with reward +1 / −1. A `Percept` carries a mapping (Rust: `Vec<f64>`), a `Decision` carries θ (Rust: an `ActionCommand`) |
 | `control.SafetySupervisor` | `CognitiveMode::Emergency` (priority 255 in `think`) | |
+| `experiments.bandit.ThompsonGripBandit`, `BetaParams` | `ruvector-domain-expansion` `transfer::{MetaThompsonEngine, BetaParams}` | one domain with uniform priors; `select_arm` and `record_outcome` as in the crate, but a tie goes to a random tied arm (the crate: the first); a `ContextBucket` becomes a pair of probe bins, an `ArmId` an arm index. **Sampler deviation:** the crate's `BetaParams::sample` is not a Beta draw (a one-term normal approximation, or a power-law formula when α ≤ 1 or β ≤ 1, which the Beta(1, 1) prior hits); ours is numpy's exact `Generator.beta`. Transfer priors and cost EMAs are not ported |
 | `memory.backend.MemoryBackend` | — (adapter seam) | `NumpyBackend` now; `RuVectorBackend` in T22 |
 
 **Drop-in path (T22).** A small maturin + PyO3 crate (`rust/ruvector_vfa_py/`) depends on `ruvector-robotics` by git and exposes `EpisodicMemory`, `SemanticMemory`, `SkillLibrary`, and `CognitiveCore`. `RuVectorBackend` implements `MemoryBackend` on top of it. A parity test proves both backends return the same top-k on unit-norm vectors.
@@ -406,3 +411,4 @@ runs/                     # git-ignored artifacts
 | D16 | The safety supervisor runs inside the env's tick loop, on by default; the commanded target must stay in the box, the measured ee may lag 3 cm past it (T09) | every policy (skill, RL, scripts) is covered without opting in, and the stop lands in the same tick; a target outside the box is a fault at once, while a tracking ee overshoots its target |
 | D17 | A sixth hidden class, `brittle` (stiff, breaks at 12–20 N summed), frozen with the benchmark (T10) | with five classes one fixed θ reached 0.800 success@1, above the 0.75 the benchmark needs; a mid-force breakable class means a high grip breaks two classes and a low grip drops the heavy ones, while every class alone stays solvable (1.00) |
 | D18 | Policies see an opaque situation key; the stratified class order is shuffled per block; `quick` is two tuning seeds with 60 situations each (T10) | the index of a stratified situation reveals its class; tuning on an evaluation seed would grade later tasks on data they were tuned on; a learning-curve half of 7 cubes (one seed of 15) is too small to show learning, and two seeds give halves of 60 |
+| D19 | Thompson-sampling bandit baselines (`bandit`, `bandit_flat`) ported from `ruvector-domain-expansion`, with numpy's exact Beta draws (T17a) | the bandit learns from success and failure like memory but has no similarity search over force, so memory beating it shows that the gain comes from RuVector-style retrieval, not from learning alone; the crate's approximate sampler is not a Beta draw (on a Python transcription of it, Beta(1, 1) gives variance 0.128 instead of 0.083) |

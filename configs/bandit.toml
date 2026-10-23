@@ -1,0 +1,27 @@
+# Thompson-sampling bandit baselines (T17a; vfa/experiments/bandit.py).
+# Not part of the frozen benchmark: configs/benchmark.sha256 does not hash this file.
+#
+# Arms: every grip_force x close_speed pair (8 x 3 = 24); the other θ fields keep
+# naive's values. The grid spans the SkillParams bounds, its spacing follows the
+# calibration seeds, and it was fixed before the first bandit run:
+# - grip_force [N per finger] is log-spaced over its bounds, 0.5-25 N
+#   (numpy.geomspace(0.5, 25, 8), rounded to 0.01 N; 4.6753 written as 4.67),
+#   because the classes' best calibration grips span 1-12 N (docs/RESULTS.md §3):
+#   a linear grid would put no arm between 0.5 and 4 N, where fragile_soft and
+#   brittle lift.
+# - close_speed [m/s] is linear over its bounds, 0.05-0.5 m/s. After the probe T08
+#   found the same peak and no break at 0.05 and 0.5 m/s, so its three values
+#   mostly split the evidence per grip; they stay because 8 x 3 is the task's
+#   default.
+[arms]
+grip_force = [0.5, 0.87, 1.53, 2.67, 4.67, 8.18, 14.3, 25.0]
+close_speed = [0.05, 0.275, 0.5]
+
+# Context buckets of `bandit`: bins of the probe's heft load and closure-force
+# slope. A feature's bin edges are its quantiles k/n (k = 1 .. n-1; 3 bins:
+# terciles) over every episode of the calibration fixture
+# tests/fixtures/calib_episodes.npz, so no evaluation data sets them.
+# `bandit_flat` uses one bucket.
+[buckets]
+heft_load = 3
+closure_slope = 3

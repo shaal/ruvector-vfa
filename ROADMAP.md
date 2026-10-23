@@ -309,7 +309,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~45 min.
   - depends: T16
 
-- [ ] **T17a — Thompson-sampling bandit: a self-learning baseline ported from `ruvector-domain-expansion`**
+- [x] **T17a — Thompson-sampling bandit: a self-learning baseline ported from `ruvector-domain-expansion`**
   - Goal: a simpler learner for memory to beat. The bandit also learns from success and failure, but it has no similarity search over force. If memory beats it, the gain comes from the RuVector-style memory, not from learning alone.
   - Deliverables:
     - `vfa/experiments/bandit.py`: `ThompsonGripBandit`, a port of `MetaThompsonEngine` and `BetaParams` in `crates/ruvector-domain-expansion/src/transfer.rs` (local clone `~/code/utilities/ruvector`). Its docstring has a `RuVector mapping:` paragraph.
