@@ -217,11 +217,18 @@ def test_similar_successes_set_the_grip_and_are_used():
 def test_own_failures_bound_the_retry():
     policy = RetrievalPolicy()
     store(policy, "s1", 7, np.array([1.0, 0.0]), "BREAK", 8.0)
+    store(policy, "nb", 8, np.array([0.95, math.sqrt(1 - 0.95**2)]), "SUCCESS", 3.0)
     policy.begin_situation(7)
     policy.begin_attempt(2)
     decision = policy.propose(np.array([1.0, 0.0]), DEFAULT_THETA)
-    assert decision.theta.grip_force == pytest.approx(math.sqrt(GRIP_LOW * 7.2))
-    assert decision.retrieved == ("s1",)
+    assert decision.theta.grip_force == pytest.approx(3.0, rel=0.3)
+    assert decision.retrieved == ("nb", "s1")
+    # The decision's evidence: what it weighed, with roles (logged for the plots).
+    assert [(e["id"], e["role"], e["result"]) for e in decision.evidence] == [
+        ("s1", "own", "BREAK"),
+        ("nb", "success", "SUCCESS"),
+    ]
+    assert decision.evidence[1]["similarity"] == pytest.approx(0.95)
 
 
 def test_dissimilar_failures_are_not_evidence():

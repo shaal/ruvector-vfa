@@ -290,7 +290,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~40 min.
   - depends: T15
 
-- [ ] **T17 — Visualization: force profiles, retrieval hits, learning curves, video, HTML report**
+- [x] **T17 — Visualization: force profiles, retrieval hits, learning curves, video, HTML report**
   - Goal: make "force is the language of manipulation" visible.
   - Deliverables:
     - `vfa/viz/plots.py`:
