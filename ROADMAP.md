@@ -239,7 +239,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
 
 ## Phase D — Dual-process cognition
 
-- [ ] **T14 — CognitiveCore: System 1 / System 2 loop with explicit handoffs**
+- [x] **T14 — CognitiveCore: System 1 / System 2 loop with explicit handoffs**
   - Goal: make the dual-process structure visible in code and logs.
   - Deliverables:
     - `vfa/cognition/cognitive_core.py`, mirroring `ruvector-robotics::cognitive::cognitive_core`: `CognitiveMode {REACTIVE, DELIBERATIVE, EMERGENCY}`, `CognitiveState {IDLE, PERCEIVING, THINKING, ACTING, LEARNING}`, `Percept`, `Decision`, `Outcome`, and `CognitiveCore` with `perceive / think / act / learn`.

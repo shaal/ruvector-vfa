@@ -47,9 +47,11 @@ at an escalation applies to what is still to run: at ``PROBE_DONE`` everything
 but ``grasp_depth`` and ``approach_speed``, at ``SLIP_UNRECOVERED`` only the grip
 and the closing speed. The fields that already ran keep their values (a warning
 says so), so θ always records what ran. A θ returned at ``SLIP_UNRECOVERED``
-replaces the grip the reflex raised; return ``None`` (or ``esc.theta``) to keep
-it. A new grip ramps at 250·``close_speed`` N/s per finger, so a slow closing
-speed makes a late rescue slow too.
+replaces the grip the reflex raised and re-arms the slip detector, even when it
+equals ``esc.theta``; return ``None`` to keep the grip without a re-arm.
+``Escalation.ran`` names the fields that already ran. A new grip ramps at
+250·``close_speed`` N/s per finger, so a slow closing speed makes a late rescue
+slow too.
 
 **What the skill reads.** Only the observation, the observable events in
 ``info["events"]``, and the robot's own state (the gripper's motor force). Its
@@ -170,6 +172,7 @@ class Escalation:
     theta: SkillParams  # θ in force when it fired
     probe: ProbeFeatures | None = None
     info: Mapping[str, Any] = field(default_factory=dict)
+    ran: tuple[str, ...] = ()  # θ fields that already acted: a returned θ keeps their values
 
 
 EscalationHandler = Callable[[Escalation], SkillParams | None]
@@ -438,7 +441,9 @@ class GraspLiftSkill:
     ) -> SkillParams | None:
         """Hand off to System 2; apply the θ it returns. The fields in ``ran`` have
         already acted (their phases are over), so they keep the values that ran."""
-        esc = Escalation(kind, self._time(), self.phase, self.theta, probe, dict(info or {}))
+        esc = Escalation(
+            kind, self._time(), self.phase, self.theta, probe, dict(info or {}), tuple(ran)
+        )
         self.escalations.append(esc)
         if probe is not None:
             slope = "n/a" if probe.closure_slope is None else f"{probe.closure_slope:.0f}N/m"

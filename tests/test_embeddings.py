@@ -107,6 +107,7 @@ def test_failure_buckets_and_missing_probe():
         ("BREAK", "BREAK"),
         ("SLIP", "UNDERGRIP"),
         ("DROP", "UNDERGRIP"),
+        ("UNDERGRIP", "UNDERGRIP"),  # T14 merges the two labels before System 2
         ("MISS", "MISS"),
         ("TIMEOUT", "OTHER"),
         ("SAFETY_STOP", "OTHER"),
