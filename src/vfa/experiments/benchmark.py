@@ -1181,7 +1181,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise SystemExit(f"--profile must be one of {sorted(config.profiles)}")
         try:
             result = aggregate(config, args.profile, args.out, args.partial)
-        except FileNotFoundError as exc:
+        except (FileNotFoundError, ValueError) as exc:  # ValueError: a condition's inputs
             print(exc, file=sys.stderr)
             return 3
         for name, c in result["conditions"].items():

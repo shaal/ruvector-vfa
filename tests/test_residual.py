@@ -16,6 +16,7 @@ import pytest
 
 from vfa.experiments import benchmark as B
 from vfa.experiments import train_residual as T
+from vfa.sim import env as E
 from vfa.skills import residual as R
 from vfa.skills.params import SkillParams
 from vfa.skills.pick import GraspLiftSkill, run_attempt
@@ -36,8 +37,12 @@ def test_outputs_stay_in_their_bounds() -> None:
         policy = R.ResidualPolicy(np.full((2, len(R.FEATURES)), scale))
         step, vz = policy.outputs(np.ones(len(R.FEATURES)))
         assert 0.0 <= step <= R.STEP_MAX and -R.VZ_MAX <= vz <= R.VZ_MAX
-    step, vz = R.ResidualPolicy().outputs(np.ones(len(R.FEATURES)))
-    assert step == pytest.approx(R.STEP_MAX / 2) and vz == 0.0  # untrained: 25 N/s, no motion
+    step, vz = R.ResidualPolicy().outputs(np.zeros(len(R.FEATURES)))
+    assert step == pytest.approx((R.STEP_MIN + R.STEP_MAX) / 2) and vz == 0.0  # untrained
+    floor, _ = R.ResidualPolicy(np.full((2, len(R.FEATURES)), -1e6)).outputs(
+        np.ones(len(R.FEATURES))
+    )
+    assert floor == pytest.approx(R.STEP_MIN)  # the command always rises
     with pytest.raises(ValueError):
         R.ResidualPolicy(np.zeros((2, 3)))
     with pytest.raises(ValueError):
@@ -83,7 +88,7 @@ def test_without_a_residual_the_skill_never_takes_its_path(monkeypatch) -> None:
 def test_a_slow_step_flattens_the_squeeze_ramp() -> None:
     env = B.make_env(B.load_benchmark_config())
     slow = np.zeros((2, len(R.FEATURES)))
-    slow[0, 0] = -1.4  # SQUEEZE: about 10 N/s per finger
+    slow[0, 0] = -3.0  # SQUEEZE: about 7 N/s per finger
     jerks = []
     for skill in (GraspLiftSkill(), GraspLiftSkill(R.ResidualPolicy(slow))):
         result = run_attempt(
@@ -97,6 +102,50 @@ def test_a_slow_step_flattens_the_squeeze_ramp() -> None:
         rate = np.diff(force) / np.diff(ep.arrays["t"][rows])
         jerks.append(float(np.sqrt(np.mean(rate * rate))))  # RMS force rate in SQUEEZE
     assert jerks[1] < 0.7 * jerks[0]
+
+
+def test_squeeze_waits_for_the_grip_under_the_slowest_step() -> None:
+    """At the step floor (5 N/s) the squeeze outlasts the gripper's own ramp time; LIFT
+    must still start at θ's grip."""
+    floor = np.zeros((2, len(R.FEATURES)))
+    floor[0, :3] = -50.0  # every phase at the floor
+
+    class Watch(GraspLiftSkill):
+        def _enter(self, phase: str) -> None:
+            if phase == "LIFT":
+                self.at_lift = self._env.gripper.actuator_squeeze()
+            super()._enter(phase)
+
+    env = B.make_env(B.load_benchmark_config())
+    skill = Watch(R.ResidualPolicy(floor))
+    theta = SkillParams(grip_force=16.0)
+    result = run_attempt(env, skill, theta, seed=3, options={"object_class": "heavy_rigid"})
+    assert skill.at_lift == pytest.approx(16.0, rel=0.02)
+    assert result.result == "SUCCESS" and result.sim_s < E.TIME_LIMIT_S["lift"]
+
+
+def test_the_vertical_output_moves_the_hold() -> None:
+    up = np.zeros((2, len(R.FEATURES)))
+    up[1, 1:3] = 50.0  # LIFT and HOLD: +VZ_MAX
+    env = B.make_env(B.load_benchmark_config())
+    tops = []
+    for skill in (GraspLiftSkill(), GraspLiftSkill(R.ResidualPolicy(up))):
+        result = run_attempt(
+            env, skill, SkillParams(), seed=3, options={"object_class": "light_rigid"}
+        )
+        ep = result.episode
+        hold = np.asarray(ep.phases)[ep.arrays["phase"]] == "HOLD"
+        tops.append(float(np.max(ep.arrays["ee_pos"][hold, 2])))
+    assert tops[1] - tops[0] == pytest.approx(R.Z_OFFSET[1], abs=0.004)
+
+
+def test_only_the_residual_condition_gets_a_residual(tmp_path) -> None:
+    config = B.load_benchmark_config()
+    for condition in ("memory_full+residual", "memory_full"):
+        job = B.plan_condition(config, condition, "quick", seeds=[500], out=tmp_path)[0]
+        job = B.Job(**{**{f: getattr(job, f) for f in B.Job.__dataclass_fields__}, "end": 1})
+        B.run_chunk(job)
+        assert B._WORKER["skill"].residual is None  # the cached worker skill stays plain
 
 
 def test_pick_place_takes_no_residual() -> None:
@@ -140,6 +189,7 @@ def test_training_resumes_by_generation(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(T, "evaluate", fake_evaluate)
     assert not T.train(tmp_path, 3, 4, 1, deadline=0.0)  # generation 0 only
+    assert not T.train(tmp_path, 3, 4, 1, deadline=0.0)  # resumes: still generation 0
     curve = json.loads((tmp_path / "curve.json").read_text())
     assert [g["generation"] for g in curve["generations"]] == [0]
     assert T.train(tmp_path, 3, 4, 1, deadline=1e9)
@@ -147,6 +197,15 @@ def test_training_resumes_by_generation(tmp_path, monkeypatch) -> None:
     assert [g["generation"] for g in curve["generations"]] == [0, 1, 2, 3]
     assert curve["generations"][-1]["reward"] > curve["generations"][0]["reward"]
     assert (tmp_path / "residual.npz").exists() and (tmp_path / "curve.png").exists()
+    curve["generations"].append({**curve["generations"][-1], "generation": 4})  # a crash
+    (tmp_path / "curve.json").write_text(json.dumps(curve))  # after the curve, before the state
+    assert T.train(tmp_path, 4, 4, 1, deadline=1e9)  # generation 4 runs again, once
+    gens = [
+        g["generation"] for g in json.loads((tmp_path / "curve.json").read_text())["generations"]
+    ]
+    assert gens == [0, 1, 2, 3, 4]
+    with pytest.raises(SystemExit):
+        T.train(tmp_path, 4, 2, 1, deadline=1e9)  # other settings: refused
 
 
 # ------------------------------------------------------------- benchmark

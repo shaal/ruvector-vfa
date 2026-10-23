@@ -148,15 +148,34 @@ def evaluate(
     return np.array(rows, dtype=float)
 
 
-def summary(rows: np.ndarray) -> dict[str, float]:
-    """Mean reward and success; jerk and excess over the successful episodes."""
+def summary(rows: np.ndarray) -> dict[str, float | None]:
+    """Mean reward and success; jerk and excess over the successful episodes (None
+    without one)."""
     ok = rows[:, 1] > 0.5
+    jerk = rows[ok, 2][np.isfinite(rows[ok, 2])]
+    excess = rows[ok, 3][np.isfinite(rows[ok, 3])]
     return {
         "reward": float(np.mean(rows[:, 0])),
         "success": float(np.mean(rows[:, 1])),
-        "jerk": float(np.nanmean(rows[ok, 2])) if np.any(ok) else float("nan"),
-        "excess": float(np.nanmean(rows[ok, 3])) if np.any(ok) else float("nan"),
+        "jerk": float(np.mean(jerk)) if jerk.size else None,
+        "excess": float(np.mean(excess)) if excess.size else None,
     }
+
+
+def fingerprint(episodes: dict[int, list[dict]], batch: int) -> str:
+    """What a resumed run must share with the saved one: the replay and the settings."""
+    import hashlib
+
+    settings = {"pairs": PAIRS, "sigma": SIGMA, "lr": LR, "batch": batch, "lambda": LAMBDA}
+    settings |= {
+        "j0": J0,
+        "mu": MU,
+        "e0": E0,
+        "stream": STREAM,
+        "dim": ResidualPolicy().to_vector().size,
+    }
+    doc = json.dumps({"settings": settings, "replay": episodes}, sort_keys=True)
+    return hashlib.sha256(doc.encode()).hexdigest()
 
 
 # -------------------------------------------------------------------------- ES
@@ -207,16 +226,30 @@ def train(out: Path, generations: int, batch: int, workers: int, deadline: float
     state_path, curve_path = out / "state.npz", out / "curve.json"
     center, adam, gen = np.zeros(dim), Adam(dim, LR), 0
     curve: list[dict[str, Any]] = []
+    key = fingerprint(episodes, batch)
     if state_path.exists():
         with np.load(state_path) as s:
+            if str(s["fingerprint"]) != key:
+                raise SystemExit(
+                    f"{out} holds a run with another replay or settings: use a new --out"
+                )
             center, gen = s["center"], int(s["generation"])
             adam.m, adam.v, adam.t = s["m"], s["v"], int(s["t"])
-        curve = json.loads(curve_path.read_text())["generations"]
+        if curve_path.exists():  # the curve is written first: drop what the state lacks
+            curve = [
+                c
+                for c in json.loads(curve_path.read_text())["generations"]
+                if c["generation"] <= gen
+            ]
+        if not curve or curve[-1]["generation"] != gen:
+            curve = []  # rebuilt below from the saved center's score
+    if gen and not curve:
+        raise SystemExit(f"{out}: the curve does not match the saved state; use a new --out")
     print(f"replay: {len(train_pool)} training, {len(valid)} validation episodes; generation {gen}")
     with ProcessPoolExecutor(max_workers=workers) as pool:
         if not curve:  # generation 0: the untrained center
             curve.append({"generation": 0, **summary(evaluate(pool, [center], valid)[0])})
-            _save(out, center, adam, gen, curve)
+            _save(out, center, adam, gen, curve, key)
         while gen < generations and time.perf_counter() - t0 < deadline:
             rng = np.random.default_rng((STREAM, gen))
             eps = rng.standard_normal((PAIRS, dim))
@@ -235,12 +268,11 @@ def train(out: Path, generations: int, batch: int, workers: int, deadline: float
                     **summary(valid_rows),
                 }
             )
-            _save(out, center, adam, gen, curve)
+            _save(out, center, adam, gen, curve, key)
             c = curve[-1]
             print(
                 f"generation {gen}: validation reward {c['reward']:.4f} success {c['success']:.3f} "
-                f"jerk {c['jerk']:.1f} excess {c['excess']:.2f} "
-                f"({time.perf_counter() - t0:.0f} s)",
+                f"jerk {c['jerk']} excess {c['excess']} ({time.perf_counter() - t0:.0f} s)",
                 flush=True,
             )
     if gen < generations:
@@ -258,11 +290,10 @@ def train(out: Path, generations: int, batch: int, workers: int, deadline: float
     return True
 
 
-def _save(out: Path, center: np.ndarray, adam: Adam, gen: int, curve: list[dict]) -> None:
+def _save(out: Path, center: np.ndarray, adam: Adam, gen: int, curve: list[dict], key: str) -> None:
+    """The curve first, then the state: after a crash between the two, a resume drops
+    the curve's extra generation and runs it again."""
     out.mkdir(parents=True, exist_ok=True)
-    tmp = out / "state.tmp.npz"
-    np.savez(tmp, center=center, m=adam.m, v=adam.v, t=adam.t, generation=gen)
-    tmp.replace(out / "state.npz")
     rewards = [c["reward"] for c in curve]
     doc = {
         "hyperparameters": {
@@ -279,6 +310,9 @@ def _save(out: Path, center: np.ndarray, adam: Adam, gen: int, curve: list[dict]
         "smoothed_reward": smoothed(rewards),
     }
     B._write_json(out / "curve.json", doc)
+    tmp = out / "state.tmp.npz"
+    np.savez(tmp, center=center, m=adam.m, v=adam.v, t=adam.t, generation=gen, fingerprint=key)
+    tmp.replace(out / "state.npz")
 
 
 def _plot(curve: list[dict], path: Path) -> None:
@@ -295,7 +329,8 @@ def _plot(curve: list[dict], path: Path) -> None:
     axes[0].set_xlabel("ES generation")
     axes[0].set_ylabel("reward")
     axes[0].legend(frameon=False)
-    axes[1].plot(gens, [c["jerk"] for c in curve], color="#d1242f", label="force jerk [N/s]")
+    jerk = [np.nan if c["jerk"] is None else c["jerk"] for c in curve]
+    axes[1].plot(gens, jerk, color="#d1242f", label="force jerk [N/s]")
     axes[1].set_xlabel("ES generation")
     ax2 = axes[1].twinx()
     ax2.plot(gens, [c["success"] for c in curve], color="#1a7f37", label="success")

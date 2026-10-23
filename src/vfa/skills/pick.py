@@ -119,6 +119,7 @@ SET_DOWN_S = 0.4  # minimum-jerk return to the grasp height
 SET_DOWN_SETTLE_S = 0.2
 SQUEEZE_SETTLE_S = 0.15  # T05: hold after the motor reaches the force
 SQUEEZE_MARGIN_S = 0.5
+RESIDUAL_MARGIN_S = 0.5  # with a residual, SQUEEZE leaves this much of the time limit spare
 RAMP_N_PER_S_PER_MPS = 250.0  # the gripper ramps the squeeze at 250·speed N/s per finger
 GRIP_TOLERANCE = 0.01  # a squeeze is reached within 1 % of the request
 LIFT_M = 0.12  # the env's success line is 10 cm; 2 cm cover payload sag and creep
@@ -393,7 +394,13 @@ class GraspLiftSkill:
         ramp /= RAMP_N_PER_S_PER_MPS * theta.close_speed
         settle = round(SQUEEZE_SETTLE_S / self._dt)
         reached = None
-        for k in range(round((ramp + SQUEEZE_MARGIN_S) / self._dt)):
+        ticks = round((ramp + SQUEEZE_MARGIN_S) / self._dt)
+        if self.residual is not None:
+            # The residual may rise slower than the gripper's ramp: wait for θ's grip,
+            # within the time the lift and the hold still need (T21).
+            left = env.time_limit - self._time() - lift_duration(theta.lift_accel) - HOLD_S
+            ticks = max(ticks, round((left - RESIDUAL_MARGIN_S) / self._dt))
+        for k in range(ticks):
             yield self._action(hold)
             if reached is None and _near(env.gripper.actuator_squeeze(), self._grip):
                 reached = k

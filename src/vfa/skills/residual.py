@@ -13,16 +13,18 @@ carry (0 otherwise, clipped to [0, 1]; it rises as the cube slides in the grip).
 
 - Δgrip-force, as a per-tick step: System 1's grip command (θ's grip, or a slip
   reflex's raise) is reached through a residual command that rises by at most
-  ``STEP_MAX · sigmoid(z_grip)`` N per finger per control tick (at most 50 N/s;
-  a lower command applies at once). At ``W = 0`` the step allows 25 N/s, the
-  gripper's own squeeze ramp at the default 0.1 m/s closing speed, so an
-  untrained residual changes little. A step limit, not an additive offset: on
-  memory's grasps from the calibration seeds (``scripts/probe_residual.py``) the
-  jerk² comes about equally from SQUEEZE (the squeeze ramp) and LIFT (where the
-  grip rises only through slip-reflex raises and escalations, besides sensor
-  noise). A constant 2 N less in SQUEEZE cut the jerk 7 %, while limiting every
-  rise to 10 N/s cut it 24 % for 0.7 points of success
-  (docs/RESULTS.md §11).
+  ``STEP_MIN + (STEP_MAX − STEP_MIN) · sigmoid(z_grip)`` N per finger per control
+  tick (5–50 N/s; a lower command applies at once). At ``W = 0`` the step allows
+  27.5 N/s, about the gripper's own squeeze ramp at the default 0.1 m/s closing
+  speed (25 N/s), so an untrained residual changes little. With a residual,
+  SQUEEZE waits until the motor reaches θ's grip (the floor guarantees progress),
+  within the time the lift and the hold still need before the env's time limit.
+  A step limit, not an additive offset: on memory's grasps from the calibration
+  seeds (``scripts/probe_residual.py``) the jerk² comes about equally from
+  SQUEEZE (the squeeze ramp) and LIFT (where the grip rises only through
+  slip-reflex raises and escalations, besides sensor noise). A constant 2 N less
+  in SQUEEZE cut the jerk 7 %, while limiting every rise to 10 N/s cut it 24 % for
+  0.7 points of success (docs/RESULTS.md §11).
 - Δz-velocity: ``VZ_MAX · tanh(z_z)`` m/s added to the ee target's vertical
   motion in LIFT and HOLD only (in SQUEEZE the hand rests on the cube at the
   table), integrated into an offset clamped to ``Z_OFFSET`` so the hold stays
@@ -62,6 +64,7 @@ FEATURES: tuple[str, ...] = (
 )
 OUTPUTS: tuple[str, ...] = ("grip_step", "z_velocity")
 FORCE_SCALE = 10.0  # N per feature unit
+STEP_MIN = 0.01  # N per finger per control tick (5 N/s at 500 Hz): the command always rises
 STEP_MAX = 0.1  # N per finger per control tick (50 N/s at 500 Hz)
 VZ_MAX = 0.02  # m/s
 Z_OFFSET = (-0.005, 0.02)  # m: the clamp of the integrated vertical offset
@@ -127,7 +130,8 @@ class ResidualPolicy:
     def outputs(self, x: np.ndarray) -> tuple[float, float]:
         """(grip step [N per finger per tick], Δz velocity [m/s]) for features ``x``."""
         z = self.weights @ x
-        step = STEP_MAX / (1.0 + math.exp(-float(np.clip(z[0], -50.0, 50.0))))
+        gate = 1.0 / (1.0 + math.exp(-float(np.clip(z[0], -50.0, 50.0))))
+        step = STEP_MIN + (STEP_MAX - STEP_MIN) * gate
         return step, VZ_MAX * math.tanh(float(z[1]))
 
 
