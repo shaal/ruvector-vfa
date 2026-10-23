@@ -179,7 +179,7 @@ Memory, the bandits, and the ablations run on the evaluation seeds (1000, 1001, 
 
 - **Runs.** `uv run python -m vfa.experiments.run_all --workers 8` until every chunk is done, then `run_all aggregate` and `run_all figures`. Conditions on `full`: `naive`, `best_fixed`, `random_retry`, `memory_full`, `memory_ctx_only`, the four component ablations, `bandit`, `bandit_flat`.
 - **Held-out run** (`heldout`, seed 2000): `memory_frozen` runs `memory_full` on the warm-up seed 1000 (all 60 situations, unscored), freezes the memory (no store, no reinforcement, no consolidation), and is scored on seed 2000. Each frozen cube's own attempts stay in a per-situation scratch, so its retries are still bounded by its failures. On seed 2000 it is compared with `naive`, `best_fixed`, `random_retry`, and a fresh `memory_full` that learns online.
-- **Ablations** (one `RetrievalPolicy` flag each): `memory_no_reinforce` never reinforces (every utility stays 0.5); `memory_no_semantic` never consolidates and never asks the skill library; `memory_no_failure_bounds` takes no bound from any failure, so a retry without a strong success neighbour repeats the default grip; `memory_no_probe` keeps θ at the probe and makes the whole proposal at the retry start, from the failed attempt's `key_probe`. Its first attempt is `naive`'s by construction (no key before the probe separates the classes, T11), so its success@1 gap is the whole first-attempt gain of the probe decision; its informative number is attempts-to-success.
+- **Ablations** (one `RetrievalPolicy` flag each): `memory_no_reinforce` never reinforces (every utility stays 0.5); `memory_no_semantic` never consolidates and never asks the skill library; `memory_no_failure_bounds` takes no bound from any failure, so a retry without a strong success neighbour repeats the default grip; `memory_no_probe` keeps θ at the probe and makes the whole proposal at the retry start, from the failed attempt's `key_probe`. Its first attempt is `naive`'s by construction (no key before the probe separates the classes, T11), so its success@1 gap is the whole first-attempt gain of the probe decision; its informative number is attempts-to-success. *Correction after the run: the first attempt runs `naive`'s θ, but a slip escalation still raises its grip, as in `memory_full` (25 of 180 first attempts end at a raised grip, 7 of them labelled `SLIP` where `naive` has `DROP`); no first-attempt success differs from `naive`'s.*
 - **Targets** (means over the 3 seeds): (1) `memory_full` success@1 over situations 21–60 ≥ `best_fixed`'s over the same window + 0.15. This is the like-for-like bar of §2. The looser reading (`best_fixed`'s overall success@1 + 0.15) is reported too, and a result between the two counts as a miss. (2) `memory_full` attempts-to-success < `random_retry`'s. (3) `memory_full` peak-force excess or force jerk < `random_retry`'s.
 - **Comparisons with `memory_full`** (the force ablation, the component ablations, the bandits): the per-seed difference (mean ± std) and a paired bootstrap 95 % interval over the 180 situations pooled over seeds (10 000 draws, seed 0; success@1 resamples situations 21–60 only). A component's sentence comes from the success@1 (21–60) and attempts-to-success intervals: removing it makes at least one measurably worse and none better → *it helps*; the reverse → *it hurts*; both → *mixed*; neither → *no measurable effect*. Break rate is reported, not classified.
 - **Regression check.** The code fingerprint changed, so the baselines re-run on `full`; they must reproduce §2 (`naive` success@1 0.639, `best_fixed` 0.650 and 0.658 on 21–60, `random_retry` success@5 0.828). On `quick`, `memory_full`, `memory_ctx_only`, `bandit`, and `bandit_flat` reproduced §6 and §8 exactly on this code.
@@ -202,6 +202,7 @@ Two invocations of `run_all --workers 8` ran the 74 chunks (5 min 33 s and 2 min
 | `memory_no_probe` | 0.639 ± 0.010 | 0.658 ± 0.014 | 1.000 ± 0.000 | 1.39 ± 0.05 | 0.195 ± 0.011 | 8.09 ± 0.39 | 41.0 ± 1.9 |
 | `memory_no_failure_bounds` | 0.683 ± 0.029 | 0.733 ± 0.014 | 0.717 ± 0.029 | 2.48 ± 0.20 | 0.616 ± 0.020 | 9.21 ± 0.28 | 54.8 ± 5.6 |
 | `bandit` | 0.578 ± 0.079 | 0.600 ± 0.050 | 0.950 ± 0.029 | 1.94 ± 0.21 | 0.137 ± 0.023 | 11.31 ± 1.90 | 49.3 ± 2.8 |
+| `bandit_flat` | 0.578 ± 0.048 | 0.533 ± 0.038 | 0.961 ± 0.035 | 1.99 ± 0.04 | 0.205 ± 0.006 | 11.23 ± 2.08 | 55.4 ± 4.1 |
 
 **Targets: all three met.**
 
@@ -211,7 +212,7 @@ Two invocations of `run_all --workers 8` ran the 74 chunks (5 min 33 s and 2 min
 
 ### 9.3 Ablations and the bandits
 
-Difference from `memory_full` (condition − `memory_full`): mean ± std over seeds, then the paired bootstrap 95 % interval over situations. Verdicts follow the rule of §9.1.
+Difference from `memory_full` (condition − `memory_full`): mean ± std over seeds, then the paired bootstrap 95 % interval over situations. Verdicts follow the rule of §9.1. The bootstrap treats situations as independent, but a learning run's situations depend on the ones before, so the intervals are somewhat narrow; every *helps* or *better* verdict also has a per-seed difference of one sign on all 3 seeds.
 
 
 | vs `memory_full` | Δ success@1, 21–60 | Δ attempts-to-success | Δ break rate | verdict |
@@ -227,13 +228,13 @@ Difference from `memory_full` (condition − `memory_full`): mean ± std over se
 - **Force features** (`memory_ctx_only`, the force ablation): they help. With context keys only, success@1 over 21–60 falls by 0.325, to 0.600, under `naive`'s 0.658, and attempts-to-success rises by 0.33.
 - **Reinforcement** (`memory_no_reinforce`, utility fixed at 0.5): no measurable effect. Some θ changed, but success@1 over 21–60 moved by +0.008 [+0.000, +0.025] and attempts-to-success by −0.01 [−0.02, +0.00].
 - **Semantic tier and skill library** (`memory_no_semantic`): no measurable effect. Every outcome in all 180 situations is the same as `memory_full`'s; the records are identical on seeds 1000 and 1002. The skill is asked only when no stored success reaches similarity 0.8, and on these seeds it never changed an outcome.
-- **The probe decision** (`memory_no_probe`): it helps. Without it the first attempt is `naive`'s (success@1 over 21–60 −0.267, to 0.658), and the retries, which still use the failed attempt's force signature, need 0.21 more attempts.
+- **The probe decision** (`memory_no_probe`): it helps. Without it the first attempt runs `naive`'s θ (until a slip escalation) and succeeds exactly where `naive`'s does (success@1 over 21–60 −0.267, to 0.658); the retries, which still use the failed attempt's force signature, need 0.21 more attempts.
 - **Failure bounds** (`memory_no_failure_bounds`): they help. Without them a retry repeats the default grip unless a similar success exists: success@5 falls to 0.717, attempts-to-success rises by 1.29, and the break rate by 0.514.
 - **The bandits.** `memory_full` beats a learner without similarity search: against `bandit`, success@1 over 21–60 is 0.325 higher [0.233, 0.417] and attempts-to-success 0.75 lower [0.56, 0.96]; `bandit_flat` is further behind.
 
 ### 9.4 Held-out run (seed 2000)
 
-`memory_frozen` learned on the 60 situations of seed 1000, then ran the 60 new situations of seed 2000 with no further writes. One seed, so no spread.
+`memory_frozen` learned on the 60 situations of seed 1000, then ran the 60 new situations of seed 2000 with no further writes. One seed, so no spread. No memory or bandit had run on seed 2000 before; only a fixed-θ grid of a T10 review (one attempt per grip) had.
 
 | Held-out (seed 2000) | success@1 | success@1, 21–60 | success@5 | attempts-to-success | break rate |
 |---|---|---|---|---|---|
@@ -244,11 +245,11 @@ Difference from `memory_full` (condition − `memory_full`): mean ± std over se
 | `memory_frozen` | 0.983 | 0.975 | 1.000 | 1.03 | 0.016 |
 
 
-The frozen memory transfers to new cubes: its first attempts succeed in 59 of 60 situations, against 54 for a fresh `memory_full` that starts empty on this seed and 39 for `naive`. At the first attempt the fresh memory fails 4 of 10 `brittle` cubes, 1 `fragile_soft`, and 1 `heavy_slippery`; the frozen memory fails 1 `brittle` cube.
+The frozen memory transfers to new cubes: its first attempts succeed in 59 of 60 situations, against 39 for `naive`, and 54 for a fresh `memory_full` that starts empty on this seed. The gap to the fresh memory is not established: the two differ in 5 situations, all in the frozen memory's favour (exact McNemar p = 0.0625, one seed). At the first attempt the fresh memory fails 4 of 10 `brittle` cubes, 1 `fragile_soft`, and 1 `heavy_slippery`; the frozen memory fails 1 `brittle` cube.
 
 ### 9.5 Figures
 
-`run_all aggregate` draws the learning curves; `run_all figures` re-ran seed 1000's `random_retry` and `memory_full` with every episode saved, checked that their records equal the scored chunks' (but for wall times), and drew the force profiles.
+`run_all aggregate` draws the learning curves; `run_all figures` re-ran seed 1000's `random_retry` and `memory_full` with every episode saved, checked that their records equal the scored chunks' (but for wall times), and drew the force profiles. The figure's selection rule (per class, the first cube both lift with grips at least 1 N apart) was set after the evaluation run: the first draw (the first cube both lift) showed the same default grip twice in most panels.
 
 ![Learning curves on the evaluation seeds](figures/t18_learning_curves.png)
 
@@ -260,6 +261,6 @@ The frozen memory transfers to new cubes: its first attempts succeed in 59 of 60
 
 **Where memory still fails.** 26 of its 180 first attempts failed: 13 `brittle` breaks, 7 `fragile_soft` breaks, 5 `heavy_slippery` under-grips, and 1 `heavy_rigid` slip. In situations 21–60, 9 remain: 6 `brittle` breaks, 2 `fragile_soft` breaks, and 1 `heavy_slippery` drop. `brittle` is the weak class: memory lifts 17 of 30 `brittle` cubes at the first attempt, while `best_fixed` (5 N) lifts all 30. A likely cause, not measured here: a `brittle` cube's heft lies between the two heavy classes' (§3), so a heavy neighbour can pass the 0.8 threshold and set a grip that breaks it. 5 of the 7 `fragile_soft` breaks are in the first 11 situations, before memory holds a similar success.
 
-**Gentler, but not with less force.** `memory_full`'s force jerk (36.7 N/s) is lower than every baseline's and both bandits', but its peak-force excess is higher than `random_retry`'s (10.48 against 7.78 N). The excess comes from the slippery classes: 18.3 against 4.4 N on `slippery` and 16.0 against 7.7 N on `heavy_slippery`. A likely cause, not measured here: both classes slide in the probe (§3), so a `slippery` cube's strong neighbours include `heavy_slippery` successes at high grips. Memory then lifts the cube at the first attempt, with more force than it needs (the `slippery` panel above: 25 N per finger, an excess of 34.3 N). The realistic pad noise adds about 19 N/s to every jerk value in quadrature.
+**Gentler, but not with less force.** `memory_full`'s force jerk (36.7 N/s) is lower than `random_retry`'s on every seed and close to `best_fixed`'s (38.3), but its peak-force excess is higher than `random_retry`'s (10.48 against 7.78 N). The excess comes from the slippery classes: 18.3 against 4.4 N on `slippery` and 16.0 against 7.7 N on `heavy_slippery`. A likely cause, not measured here: both classes slide in the probe (§3), so a `slippery` cube's strong neighbours include `heavy_slippery` successes at high grips. Memory then lifts the cube at the first attempt, with more force than it needs (the `slippery` panel above: 25 N per finger, an excess of 34.3 N). The force figure shows both sides: memory grips the breakable and light cubes far more gently (`light_rigid` 1.9 against 8.0 N per finger) and the heavy and slippery ones harder. The realistic pad noise adds about 19 N/s to every jerk value in quadrature.
 
-**The bandit learns, but without similarity search it stays far behind.** `bandit` lifts 0.578 of the cubes at the first attempt and needs 1.94 attempts (`random_retry` 2.21, `memory_full` 1.19). It breaks less than `random_retry` (0.137 against 0.468) but drops more (0.320 against 0.111).
+**Without similarity search the bandit stays far behind.** Its first attempts do not improve measurably over the run: 0.533 on situations 1–20 and 0.600 on 21–60, a gain like `naive`'s on the same cubes (0.600 and 0.658). `bandit` lifts 0.578 of the cubes at the first attempt and needs 1.94 attempts (`random_retry` 2.21, `memory_full` 1.19). It breaks less than `random_retry` (0.137 against 0.468) but drops more (0.320 against 0.111).

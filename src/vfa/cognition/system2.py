@@ -72,7 +72,8 @@ the window stays at the ``SkillParams`` bounds and a retry without a success
 neighbour repeats the default grip; ``probe_trigger=False`` keeps θ at
 ``PROBE`` and makes the whole proposal at ``FAILURE`` instead, from the failed
 attempt's ``key_probe`` (its own failures only, after a probe-less ``MISS``);
-``START`` keeps the default θ as always, so a first attempt equals ``naive``'s.
+``START`` keeps the default θ as always, so a first attempt runs ``naive``'s θ
+until a slip escalation, which raises the grip as in ``memory_full``.
 
 **Frozen memory** (``freeze()``, T18's held-out run): nothing is stored,
 reinforced, or consolidated any more. The attempts at the current cube go to

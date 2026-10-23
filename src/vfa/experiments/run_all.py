@@ -46,9 +46,11 @@ situations, mean ± std over seeds) to ``docs/figures/t18_learning_curves.png``.
 **Figures.** ``figures`` re-runs ``random_retry`` and ``memory_full`` on the
 first evaluation seed with every episode saved (``<out>/t18_figures``), checks
 that their records equal the scored chunks' (but for wall times), and draws,
-per class, the first cube that both conditions lift with different grips (else
-the first that both lift): the summed pad force of each one's successful attempt
-(``docs/figures/t18_force_profiles.png``).
+per class, the first cube that both conditions lift with grips at least
+``GRIP_GAP`` apart (else the first that both lift): the measured summed pad force
+of each one's successful attempt (``docs/figures/t18_force_profiles.png``). The
+rule was set after the evaluation run: the first draw (the first cube both lift)
+showed the same default grip twice in most panels.
 
 RuVector mapping: none; this module runs the conditions (ARCHITECTURE §10 maps
 the memory and cognition types they use).
@@ -91,6 +93,7 @@ ABLATIONS: tuple[str, ...] = (
 )
 COMPARED: tuple[str, ...] = ("memory_ctx_only", *ABLATIONS, "bandit", "bandit_flat")
 BOOT = 10_000
+GRIP_GAP = 1.0  # N per finger: the force figure's cubes differ at least this much in grip
 DEADLINE_S = 300.0
 FIGURES = REPO_ROOT / "docs" / "figures"
 CURVES = ("naive", "best_fixed", "random_retry", "memory_full", "memory_ctx_only", "bandit")
@@ -294,7 +297,12 @@ def targets(full: Mapping[str, Any]) -> dict[str, Any]:
         mean("random_retry", "attempts_to_success"),
     )
     return {
-        "success_at_1_late": {"value": late, "bar": bar, "loose_bar": loose, "met": late >= bar},
+        "success_at_1_late": {
+            "value": late,
+            "bar": bar,
+            "loose_bar": loose,
+            "met": late >= max(bar, loose),  # between the two bars is a miss
+        },
         "attempts_to_success": {"value": tries[0], "bar": tries[1], "met": tries[0] < tries[1]},
         "gentler_force": {
             "peak_force_excess": list(excess),
@@ -408,8 +416,11 @@ def force_figure(
         differ = [
             j
             for j in both
-            if wins["memory_full"][j]["theta_final"]["grip_force"]
-            != wins["random_retry"][j]["theta_final"]["grip_force"]
+            if abs(
+                wins["memory_full"][j]["theta_final"]["grip_force"]
+                - wins["random_retry"][j]["theta_final"]["grip_force"]
+            )
+            >= GRIP_GAP
         ]
         i = (differ or both)[0]
         top = 0.0
@@ -442,8 +453,9 @@ def force_figure(
     for ax in axes[:, 0]:
         ax.set_ylabel("summed pad force [N]")
     fig.suptitle(
-        f"Force profiles of the successful attempt, seed {seed}: per class, the first cube both "
-        "conditions lift with different grips (excess: peak summed force − m(g + a)/μ)",
+        f"Measured pad force of the successful attempt, seed {seed}: per class, the first cube "
+        f"both conditions lift with grips ≥ {GRIP_GAP:g} N apart\n(excess: peak of the true summed "
+        "finger–cube force − m(g + a)/μ, with the attempt's lift acceleration a)",
         fontsize=10,
     )
     fig.tight_layout()

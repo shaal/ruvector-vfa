@@ -110,7 +110,7 @@ def test_without_the_probe_trigger_a_miss_still_bisects_on_own_failures():
     assert decision.theta.grip_force < 8.0 and decision.retrieved == ("own",)
 
 
-def test_a_frozen_memory_takes_no_writes_but_bounds_the_cube_it_holds():
+def test_a_frozen_memory_takes_no_writes_but_bounds_the_cube_it_holds(monkeypatch):
     policy = RetrievalPolicy()
     key = policy.key("key_probe", VIEW)
     store(policy, "used", 1, key, "SUCCESS", 5.0)
@@ -118,15 +118,19 @@ def test_a_frozen_memory_takes_no_writes_but_bounds_the_cube_it_holds():
     before = {rid: r.utility for rid, r in policy.memory.episodic.records.items()}
     policy.begin_situation(2)
     policy.begin_attempt(1)
-    rid = policy.learn_attempt(observed("BREAK", 6.0), ["used"], SkillParams(grip_force=6.0))
+    rid = policy.learn_attempt(observed("BREAK", 4.0), ["used"], SkillParams(grip_force=4.0))
     assert {r: x.utility for r, x in policy.memory.episodic.records.items()} == before
     assert rid not in policy.memory.episodic.records and len(policy.scratch) == 1
     policy.begin_attempt(2)
     decision = policy.propose(key, DEFAULT_THETA)
-    assert decision.theta.grip_force <= 6.0 * 0.9 + 1e-9  # the scratch break bounds the retry
-    policy.end_situation()
-    policy.begin_situation(3)
+    assert rid in decision.retrieved  # the scratch break bounds the retry below 3.6 N
+    assert decision.theta.grip_force <= 4.0 * 0.9 + 1e-9
+    monkeypatch.setattr(policy.library, "consolidate", lambda memory: pytest.fail("consolidated"))
+    for situation in range(3, 13):
+        policy.end_situation()
+        policy.begin_situation(situation)
     assert policy.scratch == [] and policy._own_failures() == []
+    assert len(policy.memory.episodic) == 1
 
 
 def test_the_benchmark_maps_each_ablation_to_one_flag(tmp_path):

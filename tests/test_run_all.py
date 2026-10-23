@@ -52,6 +52,8 @@ def test_bootstrap_is_paired_and_the_verdict_rule():
     assert R.verdict(same) == "no measurable effect"
     mixed = {"success_at_1_late": [0.05, 0.2], "attempts_to_success": [0.1, 0.4]}
     assert R.verdict(mixed) == "mixed"
+    on_zero = {"success_at_1_late": [0.0, 0.025], "attempts_to_success": [-0.0167, 0.0]}
+    assert R.verdict(on_zero) == "no measurable effect"  # a bound at 0 does not exclude 0
 
 
 def test_targets_use_the_like_for_like_bar():
@@ -72,3 +74,7 @@ def test_targets_use_the_like_for_like_bar():
     t = R.targets(full)
     assert not t["success_at_1_late"]["met"]  # between the loose 0.800 and the bar 0.808
     assert t["attempts_to_success"]["met"] and t["gentler_force"]["met"]
+    full["best_fixed"] = stats(0.640, 0.660, 2.7, 5.0, 38.0)  # now the loose bar is higher
+    t = R.targets(full)
+    assert t["success_at_1_late"]["bar"] < 0.805 < t["success_at_1_late"]["loose_bar"]
+    assert not t["success_at_1_late"]["met"]
