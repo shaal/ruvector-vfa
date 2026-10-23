@@ -326,8 +326,8 @@ def _noisy_torque_carry(seed: int, final_z: float) -> tuple[E.PandaVFAEnv, Torqu
 
 @pytest.mark.parametrize("seed", [0, 3])
 def test_torque_mode_noise_dip_in_the_air_is_no_set_down(seed: int) -> None:
-    """Under realistic noise a two-tick dip 5 % below a 0.5 N reference set these cubes
-    down 1.6 cm in the air; the 4σ noise margin keeps the carry."""
+    """Under realistic noise a two-tick dip 5 % below the reference set these cubes down
+    about 1.5 cm in the air; the 4σ noise margin keeps the carry."""
     env, _ = _noisy_torque_carry(seed, 0.016)
     assert not env._cube_contacts() & 1
     assert env.phase == "CARRY"
