@@ -279,10 +279,13 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
       2. Memory phase: start with empty memory, run `memory_full` with retries.
       3. Print a per-situation table (class hidden until the end, attempts used, failure modes) and a summary table (success@1, attempts-to-success, break rate).
     - Logs show System 1/System 2 handoffs and retrieval hits (`[MEM] hit ep_0042 sim=0.93 outcome=success θ.grip=6.1N`).
+    - A startup banner: each component (`EpisodicMemory`, `SemanticMemory`, `SkillLibrary`, `CognitiveCore`) with the `ruvector-robotics` type it mirrors, and the active backend (`NumpyBackend` is a Python mirror; the Rust crate runs only with T22's `--backend ruvector`).
+    - A `[MEM]` line each time consolidation forms or updates a skill: name, number of successes, confidence. The demo consolidates at least once, at the end of the memory phase if no earlier trigger fires.
     - Writes `runs/demo-<timestamp>/` with metrics, episodes, and memory.
   - Acceptance:
     - `vfa demo --quick` finishes in < 3 min and exits 0.
     - Its summary shows memory beating `naive` on success@1 over the second half of the situations. Quote the numbers.
+    - The output starts with the banner (each component, its `ruvector-robotics` type, the active backend) and contains at least one `[MEM]` consolidation line. Quote both.
   - Verify: `uv run vfa demo --quick`
   - Budget: ~40 min.
   - depends: T15
@@ -297,9 +300,11 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
       - Embedding map: 2-D PCA of `key_probe` colored by hidden class (diagnostic only).
     - `vfa/viz/video.py` (extra `video`): offscreen MP4/GIF of one attempt with a force overlay.
     - `vfa/viz/report.py`: a self-contained `runs/<id>/report.html` (images inlined as base64).
+      - A "RuVector components" section: a mode timeline per attempt (`REACTIVE` / `DELIBERATIVE` / `EMERGENCY`, from `handoffs.jsonl`), the item count per memory tier over the situations, and the skill list with confidence. It names the active backend.
     - `vfa demo` writes the report at the end.
   - Acceptance:
     - Running the quick demo produces all four plot types and `report.html`. Read each PNG and confirm it shows what its title claims.
+    - `report.html` has the "RuVector components" section with all three views and the backend name. Render it offscreen or read its images, and confirm each view shows real demo data.
   - Verify: `uv run vfa demo --quick` and list `runs/<latest>/`.
   - Budget: ~45 min.
   - depends: T16
