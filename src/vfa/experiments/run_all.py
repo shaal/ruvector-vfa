@@ -41,14 +41,16 @@ The verdicts and targets were fixed before the first evaluation run:
 
 ``aggregate`` writes ``<out>/t18/results.json``, prints Markdown tables, and
 draws the learning curves (success@1 and attempts-to-success per block of 6
-situations, mean ± std over seeds) to ``docs/figures/t18_learning_curves.png``.
+situations, mean ± std over seeds) to ``t18_learning_curves.png`` in the figure
+directory (``--figures``; default ``docs/figures`` for the default ``--out``,
+else ``<out>/t18/figures``).
 
 **Figures.** ``figures`` re-runs ``random_retry`` and ``memory_full`` on the
 first evaluation seed with every episode saved (``<out>/t18_figures``), checks
 that their records equal the scored chunks' (but for wall times), and draws,
 per class, the first cube that both conditions lift with grips at least
 ``GRIP_GAP`` apart (else the first that both lift): the measured summed pad force
-of each one's successful attempt (``docs/figures/t18_force_profiles.png``). The
+of each one's successful attempt (``t18_force_profiles.png`` in the figure directory). The
 rule was set after the evaluation run: the first draw (the first cube both lift)
 showed the same default grip twice in most panels.
 
