@@ -68,6 +68,14 @@ def test_the_cli_lists_the_demo_as_implemented():
     )
 
 
+def test_the_cli_runs_the_benchmark(capsys):
+    """``vfa benchmark ...`` is ``python -m vfa.experiments.benchmark ...``."""
+    assert all(name in cli._HANDLERS for name, _, _ in cli._SUBCOMMANDS)
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main(["benchmark", "--help"])
+    assert exit_info.value.code == 0 and "--condition" in capsys.readouterr().out
+
+
 @pytest.mark.render
 def test_the_video_grabs_overlay_frames(tmp_path):
     from PIL import Image

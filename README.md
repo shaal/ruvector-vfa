@@ -2,11 +2,11 @@
 
 **A force-aware, memory-augmented robot arm in MuJoCo.** A Franka Panda learns to pick up cubes it cannot tell apart by sight — heavy, slippery, soft, or brittle — by remembering how earlier grasps *felt*.
 
-Inspired by Eka Robotics' Vision-Force-Action idea ("force is the language of manipulation") and the [`ruvector-robotics`](https://github.com/ruvnet/ruvector/tree/main/crates/ruvector-robotics) cognitive crate (`MemorySystem`, `CognitiveCore`, `SkillLearning`), which the memory and cognition layers mirror in Python.
+Inspired by Eka Robotics' Vision-Force-Action idea ("force is the language of manipulation") and the [`ruvector-robotics`](https://github.com/ruvnet/ruvector/tree/main/crates/ruvector-robotics) cognitive crate (`EpisodicMemory`, `SemanticMemory`, `SkillLibrary`, `CognitiveCore`), which the memory and cognition layers mirror in Python.
 
 ![The demo: a cube that needed a retry, with the pad force and held load overlaid](docs/figures/demo_attempts.gif)
 
-*Two attempts at one cube from `uv run vfa demo --quick --video` (every third frame).*
+*Three attempts at one cube (a break, a slip, then a success) from `uv run vfa demo --quick --video` (every third frame).*
 
 ## What it does
 
@@ -14,7 +14,7 @@ Inspired by Eka Robotics' Vision-Force-Action idea ("force is the language of ma
 - **Hides the physics.** Every cube looks the same; six hidden classes differ in mass, friction, softness, and break force. A grip that holds a heavy cube crushes a brittle one.
 - **Feels before it commits.** Each grasp starts with a gentle touch-and-heft probe. Its force signature (closure stiffness, held load, slip) is the retrieval key.
 - **Remembers.** Every attempt is stored as vectors built from forces, trajectory, context, and outcome (episodic + semantic memory, cosine search, utility reinforcement, skill consolidation).
-- **Thinks at two speeds.** System 1 runs the grasp skill and a slip reflex every control tick; System 2 queries memory at the attempt start, after the probe, and after a failure, and sets the skill parameters θ (grip force, closing speed, lift acceleration, place speed, release height). A safety supervisor can override both.
+- **Thinks at two speeds.** System 1 runs the grasp skill and a slip reflex every control tick; System 2 queries memory at the attempt start, after the probe, and after a failure; after the probe it sets the grip force, closing speed, and lift acceleration of the skill parameters θ (θ also holds the grasp depth, approach speed, and the place fields, which keep their defaults). A safety supervisor can override both.
 - **Retries until success**, narrowing the grip window with this cube's own slips and breaks and with similar cubes' outcomes.
 
 ## How memory improves performance
@@ -31,7 +31,7 @@ Measured on a benchmark frozen (by hash) before any memory code existed, with th
 | `memory_full` | **0.925** | **1.19** | **0.102** | **36.7** |
 
 - **Force is what matters.** With context-only keys (`memory_ctx_only`, no force features) success@1 on cubes 21–60 drops to 0.600 (§9.2–9.3).
-- **Similarity search matters.** A Thompson-sampling bandit that learns from the same outcomes without it reaches 0.600 and needs 1.94 attempts (§9.2).
+- **Similarity search matters.** A Thompson-sampling bandit that learns from the same outcomes without it reaches 0.600 on cubes 21–60 and needs 1.94 attempts (§9.2).
 - **It transfers.** A memory that learned on one seed and was then frozen lifted 59 of 60 new cubes at the first attempt (`naive`: 39 of 60; §9.4).
 - **Pick-and-place** (§10.3): `memory_full` needs 1.250 attempts per cube, `random_retry` 2.225 (quick seeds); on a fresh seed 1.233 against 2.000.
 - **Not everything improves.** Memory grips harder than it needs on slippery cubes: its peak-force excess is higher than `random_retry`'s (10.48 against 7.78 N, §9.6), and `brittle` cubes remain its weakest class.
@@ -64,8 +64,8 @@ uv run vfa demo --quick --task pick_place   # the pick-and-place demo
 uv run vfa demo --quick --video             # also writes attempts.gif (the first cube that needed a retry)
 uv run vfa demo --seed 501                  # 60 cubes of another seed
 
-uv run python -m vfa.experiments.benchmark --condition memory_full --profile quick --workers 8
-uv run python -m vfa.experiments.benchmark aggregate --profile quick
+uv run vfa benchmark --condition memory_full --profile quick --workers 8   # also runs naive
+uv run vfa benchmark aggregate --profile quick --partial  # the conditions run so far
 uv run python -m vfa.experiments.run_all --workers 8      # every condition on the evaluation seeds (resumable)
 
 uv run pytest -m "not slow" -q              # fast tests; `-m slow` runs the physics sweeps
@@ -86,9 +86,9 @@ On Linux, use `uv run python` instead of `uv run mjpython`.
 
 ```
 src/vfa/
-  cli.py          `vfa` entry point: demo, scene-check
-  sim/            scene (MjSpec), hidden object classes and the break rule, sensors and events,
-                  episode recorder, the Gymnasium env (reach, lift, pick_place)
+  cli.py          `vfa` entry point: demo, benchmark, scene-check
+  sim/            scene (MjSpec) and scene-check, hidden object classes and the break rule, sensors
+                  and events, episode recorder, the Gymnasium env (reach, lift, pick_place)
   control/        operational-space impedance controller, force-controlled gripper, safety supervisor
   skills/         θ (params.py), the grasp-and-lift skill with the probe (pick.py),
                   pick-and-place (place.py), the slip reflex
@@ -97,7 +97,8 @@ src/vfa/
   cognition/      CognitiveCore (System 1 / System 2 / EMERGENCY), the retrieval policy, retries
   experiments/    baselines, the frozen benchmark, bandit baselines, run_all, the demo
   viz/            force plots, learning curves, video, HTML report
-configs/          frozen benchmark (objects, profiles, best_fixed θ, hashes), embedding statistics
+configs/          frozen benchmark (objects, profiles, best_fixed θ, hashes), embedding statistics,
+                  the bandit's arms (bandit.toml)
 assets/menagerie/ the vendored Franka Panda (pristine, Apache-2.0)
 scripts/          physics spikes and sweeps (T05, T06, T19), fixture builder
 tests/            unit, integration, and physics tests; fixtures/calib_episodes.npz

@@ -29,6 +29,12 @@ def _scene_check(argv: Sequence[str]) -> int:
     return scene_check.main(argv, prog="vfa scene-check")
 
 
+def _benchmark(argv: Sequence[str]) -> int:
+    from vfa.experiments import benchmark
+
+    return benchmark.main(argv)
+
+
 def _demo(argv: Sequence[str]) -> int:
     from vfa.experiments import demo
 
@@ -39,6 +45,7 @@ def _demo(argv: Sequence[str]) -> int:
 _HANDLERS: dict[str, Callable[[Sequence[str]], int]] = {
     "scene-check": _scene_check,
     "demo": _demo,
+    "benchmark": _benchmark,
 }
 
 

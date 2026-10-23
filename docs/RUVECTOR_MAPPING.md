@@ -51,7 +51,7 @@ Rust paths below are relative to `crates/ruvector-robotics/src/cognitive/` in `g
 | `Percept` | `Percept` | Fields `source`, `data`, `confidence`, `timestamp`. Ours: `data` is a mapping and `timestamp` is a float in sim seconds. Crate: `Vec<f64>` and `i64`. |
 | `Decision` | `Decision` | Ours: `theta`, `trigger`, `reasoning`, `utility`, `retrieved`, `evidence`. Crate: `action` (an `ActionCommand`), `reasoning`, `utility`. |
 | `Outcome` | `Outcome` | Fields `success`, `reward`, `description`. `Outcome.from_result` gives reward +1 or −1. |
-| — (`act` returns `SkillParams`) | `ActionCommand`, `ActionType` | No Python class. The names appear only in the `pick.py` and `place.py` docstrings. |
+| — (`act` returns `SkillParams`) | `ActionCommand`, `ActionType` | No Python class. The names appear only in docstrings (`pick.py`, `place.py`, `cognitive_core.py`). |
 | — (constructor arguments) | `CognitiveConfig` | Ours: `attention_threshold`, `learning_rate`, `max_percepts`. |
 | `RetrievalPolicy` (`vfa.cognition.system2`) | — | System 2 (T15). Retrieval over the memory tiers replaces the crate's percept choice in `think`. |
 | `DefaultPolicy`, `System2Policy` (Protocol) (`vfa.cognition.cognitive_core`) | — | The stub policy, and the interface `decide(percept, theta)`. |
@@ -156,7 +156,7 @@ Nothing in this section is built. At T20, `src/vfa/memory/ruvector_backend.py` a
 
 ### 3.2 What a Rust backend must provide
 
-- Attributes `metric` (`"cosine"`) and `dim`, which `load_index` and `save` read.
+- The attribute `metric` (`"cosine"`), which `load_index` checks against the saved index; `MemorySystem.save` records the backend class name.
 - `check(vector)`, run before any call into Rust.
 - `add(id, vector, payload)`. The vector goes to the crate. The payload stays in Python, because the crate has no payload.
 - `search(vector, k, filter)`. It returns `Hit`s in descending score order, with ties in insertion order. The score is the dot product. The crate's `recall_similar` returns no score, so the binding must return one or the backend must recompute it (open, see 3.5).

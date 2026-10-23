@@ -14,7 +14,7 @@ This project tests one claim in simulation:
 
 **A robot that stores force-rich experiences in a vector memory, and retrieves similar ones before and during each attempt, succeeds sooner and grips more gently than a robot that does not.**
 
-The memory and cognition layers mirror the `ruvector-robotics` Rust crate (`MemorySystem`, `CognitiveCore`, `SkillLearning`). The Python implementation is a stand-in with the same shapes, so the real crate can replace it (T22).
+The memory and cognition layers mirror the `ruvector-robotics` Rust crate (its `memory_system`, `cognitive_core`, and `skill_learning` modules: `EpisodicMemory`, `SemanticMemory`, `CognitiveCore`, `SkillLibrary`). The Python implementation is a stand-in with the same shapes, so the real crate can replace it (T22).
 
 ---
 
@@ -207,7 +207,7 @@ Every event is logged at INFO on `[S1]` (`SAFETY_STOP` on `[SAFETY]`). Frames mu
 
 ### 5.1 Embeddings and retrieval keys (T11)
 
-The memory stores **what was available at each decision point**, not only the final episode. Before an attempt only the context exists; after the probe, the probe forces exist; at a retry, the whole failed attempt exists. Each key type has its own index (and, in the Rust backend, its own `EpisodicMemory` instance).
+The memory stores **what was available at each decision point**, not only the final episode. Before an attempt only the context exists; after the probe, the probe forces exist; at a retry, the whole failed attempt exists. Each key type has its own index (and, in the planned Rust backend, T22, its own `EpisodicMemory` instance).
 
 | Vector | Built from | Used when |
 |---|---|---|
@@ -261,18 +261,27 @@ Each group is standardized with statistics fitted on the committed calibration f
 | `DELIBERATIVE` (System 2) | `RetrievalPolicy` | attempt start · `PROBE_DONE` · escalation (`SLIP_UNRECOVERED`) · after a failure (`MISS` included: T08 ends the attempt) |
 | `EMERGENCY` | `SafetySupervisor` | any safety violation; overrides both |
 
-Typical attempt (logged to `runs/<id>/handoffs.jsonl` and the console):
+A retry as logged (excerpt of `uv run vfa demo --quick`, cube 1's third attempt after a break at 8 N and a slip at 4.6 N; event lines and θ updates elided with …). The full trace also goes to `runs/<id>/handoffs.jsonl`:
 
 ```
-[S2] attempt 1  trigger=start      key_pre   hits=3 (best sim 0.71)  θ.grip=8.0N
-[S1] APPROACH → DESCEND → PROBE
-[S1] escalate PROBE_DONE  heft=2.9N slope=4000N/m slip=0
-[S2] trigger=probe       key_probe hits=5 (best sim 0.93, success) θ.grip=6.1N close=0.10m/s
-[S1] SQUEEZE → LIFT → HOLD
-[MEM] store ep_0117 success  reinforce ep_0042 +0.1
+[S2] attempt 4 trigger=failure grip=8N close=0.1m/s lift=0.6m/s² grasp=0.5 approach=0.4m/s (default θ; key_retry hits=0, 0.29 ms)
+[S1] REACTIVE after failure
+[S1] APPROACH
+[S1] DESCEND
+[S1] PROBE
+…
+[S1] escalate PROBE_DONE  heft=0.05N peak=1.52N slope=50418N/m slip=1
+[S2] attempt 4 trigger=probe grip=6.05N close=0.1m/s lift=0.6m/s² grasp=0.5 approach=0.4m/s (bisect: grip 6.05 N in [5.08, 7.20] (0 successes, 2 bounds), 0.22 ms)
+[S1] REACTIVE after probe
+[S1] SQUEEZE
+[S1] LIFT
+[S1] HOLD
+[S1] attempt SUCCESS (env)
+[S2] learn attempt 4: SUCCESS
+[MEM] store ep_00004 SUCCESS grip=6.0N; reinforce 2 +
 ```
 
-A failed attempt adds `[S2] trigger=failure key_retry …` and a retry with an adapted θ.
+At the start (and the retry start) System 2 keeps the default θ; the decision that sets the grip is the probe's. Here this cube's own break and slip bounded the window to [5.08, 7.20] N and the bisection chose 6.05 N.
 
 **As built in T14** (`vfa/cognition/cognitive_core.py`). `CognitiveCore.run_attempt` resets the env to show System 2 the cube, decides θ, and calls T08's `run_attempt`, which resets again with the same seed (same cube; a reset costs about 11–12 ms). The failure trigger is the start of the retry. Escalations reach System 2 through the skill's callback between two `env.step` calls; fields that already ran keep their values, and an unchanged θ goes back as `None`. Percepts are observable only: probe and escalation percepts carry an `EpisodeView` of the attempt so far; a retry sees an `ObservedAttempt` (result with SLIP and DROP merged, θ, probe, an `EpisodeView`), never the recorded episode, which holds the hidden class. A safety stop sets `EMERGENCY` until the next attempt. Each step is a line in `handoffs.jsonl` (with `log_path`). The stub policy returns the naive θ at start and keeps the θ in force later.
 
@@ -368,7 +377,7 @@ Source read: `github.com/ruvnet/ruvector`, `crates/ruvector-robotics/src/cogniti
 | Python (`vfa` subpackage; full module paths in `docs/RUVECTOR_MAPPING.md`) | Rust (`ruvector_robotics::cognitive`) | Notes |
 |---|---|---|
 | `memory.WorkingMemory` | `memory_system::WorkingMemory`, `MemoryItem` | same rule: evict the least-important item when full |
-| `memory.EpisodicMemory` | `memory_system::EpisodicMemory`, `Episode { percepts, actions, reward, timestamp }` | Rust `recall_similar` flattens `percepts` and uses a **raw dot product** → we store one unit-norm key as the single percept. One instance per key type. Rust `Episode` has no id/success: θ JSON + record id go in `actions`, signed outcome in `reward`, payloads in a Python side table |
+| `memory.EpisodicMemory` | `memory_system::EpisodicMemory`, `Episode { percepts, actions, reward, timestamp }` | Rust `recall_similar` flattens `percepts` and uses a **raw dot product** → the planned Rust backend (T22) stores one unit-norm key as the single percept. One instance per key type. Rust `Episode` has no id/success: θ JSON + record id go in `actions`, signed outcome in `reward`, payloads in a Python side table |
 | `memory.SemanticMemory` | `memory_system::SemanticMemory` | name → embedding; `find_similar` is also dot product |
 | `memory.SkillLibrary`, `Skill`, `Demonstration` | `skill_learning::{SkillLibrary, Skill, Demonstration}` | same averaging (summed in demo order, then divided) and `confidence = 1 − 1/(n+1)`; `improve_skill` clamps to [0, 1] but rejects non-finite feedback (Rust stores NaN for NaN and clamps ±inf); names must be non-empty strings and timestamps integers. Rust `Skill.trajectory` is `Vec<[f64; 3]>`; in the Rust backend (T22) θ lives in a side table. `consolidate` is ours |
 | `cognition.CognitiveCore`, `CognitiveMode`, `CognitiveState` | `cognitive_core::{CognitiveCore, CognitiveMode::{Reactive, Deliberative, Emergency}, CognitiveState}` | same modes, states, attention threshold, and `learn` rule. Rust `think()` picks the most confident percept; ours asks the System 2 policy (`RetrievalPolicy` from T15) about the newest. Rust's mode is fixed in its config; ours follows the triggers |
@@ -377,7 +386,7 @@ Source read: `github.com/ruvnet/ruvector`, `crates/ruvector-robotics/src/cogniti
 | `experiments.bandit.ThompsonGripBandit`, `BetaParams` | `ruvector-domain-expansion` `transfer::{MetaThompsonEngine, BetaParams}` | one domain with uniform priors; `select_arm` and `record_outcome` as in the crate, but a tie goes to a random tied arm (the crate: the first); a `ContextBucket` becomes a pair of probe bins, an `ArmId` an arm index. **Sampler deviation:** the crate's `BetaParams::sample` is not a Beta draw (a one-term normal approximation, or a power-law formula when α ≤ 1 or β ≤ 1, which the Beta(1, 1) prior hits); ours is numpy's exact `Generator.beta`. Transfer priors and cost EMAs are not ported |
 | `memory.backend.MemoryBackend` | — (adapter seam) | `NumpyBackend` now; `RuVectorBackend` in T22 |
 
-**Drop-in path (T22).** A small maturin + PyO3 crate (`rust/ruvector_vfa_py/`) depends on `ruvector-robotics` by git and exposes `EpisodicMemory`, `SemanticMemory`, `SkillLibrary`, and `CognitiveCore`. `RuVectorBackend` implements `MemoryBackend` on top of it. A parity test proves both backends return the same top-k on unit-norm vectors.
+**Drop-in path (planned, T22; not built).** T22 plans a small maturin + PyO3 crate (`rust/ruvector_vfa_py/`) that depends on `ruvector-robotics` by git and exposes `EpisodicMemory`, `SemanticMemory`, `SkillLibrary`, and `CognitiveCore`. `RuVectorBackend` implements `MemoryBackend` on top of it. A parity test proves both backends return the same top-k on unit-norm vectors.
 
 **Candidate extensions** (crate modules not used yet): `behavior_tree` (skill phases as a tree), `decision_engine` (utility-based θ selection), `world_model`, `perception::scene_graph`, and `bridge::indexing` (spatial index).
 
@@ -387,8 +396,8 @@ Source read: `github.com/ruvnet/ruvector`, `crates/ruvector-robotics/src/cogniti
 
 ```
 src/vfa/
-  cli.py                  # `vfa` entry point (demo, scene-check); the benchmark runs as python -m vfa.experiments.benchmark
-  sim/                    # scene.py (MjSpec), objects.py, sensors.py, recorder.py, env.py
+  cli.py                  # `vfa` entry point (demo, benchmark, scene-check)
+  sim/                    # scene.py (MjSpec), scene_check.py, objects.py, sensors.py, recorder.py, env.py
   control/                # osc.py, gripper.py, throughput.py (T03 timing CLI), safety.py
   skills/                 # params.py, pick.py, place.py (T19), reflexes.py; residual.py (planned, T21)
   memory/                 # embeddings.py, backend.py, memory_system.py, skill_learning.py; ruvector_backend.py (planned, T22)
@@ -396,7 +405,7 @@ src/vfa/
   experiments/            # baselines.py, bandit.py, benchmark.py, demo.py, run_all.py; train_residual.py (planned, T21)
   viz/                    # force_plot.py, plots.py, video.py, report.py
 assets/menagerie/franka_emika_panda/   # vendored, pristine, Apache-2.0
-configs/                  # objects.toml, benchmark.toml, best_fixed.toml, benchmark.sha256, embedding_stats.npz,
+configs/                  # objects.toml, benchmark.toml, best_fixed.toml, benchmark.sha256, embedding_stats.npz, bandit.toml (T17a),
                           # benchmark_pick_place.toml + .sha256, embedding_stats_place.npz (T19)
 scripts/                  # spike_grip.py (T05), record_episode.py and size_slip_detector.py (T06), make_fixtures.py and probe_classes.py (T10), sweep_place.py (T19)
 rust/ruvector_vfa_py/     # planned, T22
