@@ -210,7 +210,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~45 min. Tests < 30 s.
   - depends: T10
 
-- [ ] **T12 — MemorySystem: working, episodic, semantic tiers + pluggable backend**
+- [x] **T12 — MemorySystem: working, episodic, semantic tiers + pluggable backend**
   - Goal: the vector memory, shaped so the real RuVector crate can replace it.
   - Deliverables:
     - `vfa/memory/backend.py`: `MemoryBackend` Protocol — `add(id, vector, payload)`, `search(vector, k, filter=None) -> list[Hit]`, `update(id, payload_patch)`, `save(path)`, `load(path)`. `NumpyBackend` implements cosine (dot on unit vectors) and Euclidean.
