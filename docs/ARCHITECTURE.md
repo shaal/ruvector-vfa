@@ -226,12 +226,14 @@ Each group is standardized with statistics fitted on the committed calibration f
 
 ### 5.3 Reinforcement and consolidation
 
-- Every episodic record has `utility ∈ [0, 1]` (initial 0.5). When System 2 uses a record and the attempt succeeds, the record's utility rises; on failure it falls. Ranking score: `similarity × (0.5 + utility)`.
+- Every episodic record has `utility ∈ [0, 1]` (initial 0.5). When System 2 uses a record and the attempt succeeds, the record's utility rises; on failure it falls. Ranking score: `similarity × (0.5 + utility)`, divided instead of multiplied when the similarity is negative, so a higher utility always ranks higher. At utility 0.5 the score is the similarity.
 - `SkillLibrary.consolidate()` clusters successful episodes on `key_probe` (no class labels), learns one `Skill` per cluster with `learn_from_demonstration` (averaged trajectory and θ, `confidence = 1 − 1/(n+1)`), and stores the centroid in `SemanticMemory`. `improve_skill(name, feedback)` adjusts confidence after each use (clamped to [0, 1]), exactly as in the Rust crate.
 
 ### 5.4 Backend seam
 
-`MemoryBackend` (Protocol): `add`, `search`, `update`, `save`, `load`. `NumpyBackend` is the default (brute force, cosine or Euclidean; fine for thousands of records). `RuVectorBackend` (T22) runs the same calls through the Rust crate via PyO3. Both must return the same top-k, so the backends can differ only in speed; T22 measures insert and search time at 1 000 to 100 000 records. A later backend can use `ruvector-core` HNSW for scale without touching cognition code.
+`MemoryBackend` (Protocol): `add`, `check`, `search`, `update`, `vector`, `payload`, `ids`, `save`, `load`, `in`, `len`. `NumpyBackend` is the default (brute force, cosine or Euclidean; fine for thousands of records). `RuVectorBackend` (T22) runs the same calls through the Rust crate via PyO3. Both must return the same top-k, so the backends can differ only in speed; T22 measures insert and search time at 1 000 to 100 000 records. A later approximate backend (`ruvector-core` HNSW) can scale further without touching cognition code, but it needs its own recall tolerance instead of exact parity.
+
+**As built in T12** (`vfa/memory/backend.py`, `memory_system.py`). `NumpyBackend` stores every cosine vector at unit norm and scores by a left-to-right dot product, as the crate does (the parity rule), filters by payload mapping or callable, and keeps insertion order on ties. `EpisodicMemory` keeps one index per key type; a record joins only the indexes of the keys it has (by convention `key_retry` for failures, `key_probe` once the probe finished). `recall_similar` ranks by the §5.3 score, widening its search window until no farther record can outrank the k-th; `reinforce` moves utility by 0.1 toward 1 or 0, clamped to [0, 1]. `MemorySystem.save` writes episodic and semantic memory to a new version directory, then points `memory.json` at it, so a crash leaves the last complete save; `load` refuses another backend or metric. On the fixture, the nearest other cube by `key_probe` is the same class 0.967 of the time.
 
 ---
 
