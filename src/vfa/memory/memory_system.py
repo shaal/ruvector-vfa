@@ -355,6 +355,14 @@ class SemanticMemory:
         """Drop every concept (e.g. before a fresh consolidation)."""
         self.index = self._factory()
 
+    def rebuild(self, concepts: Sequence[tuple[str, np.ndarray, Mapping[str, Any]]]) -> None:
+        """Replace every concept with ``concepts`` (name, embedding, payload) at once;
+        on any error the old concepts stay."""
+        fresh = self._factory()
+        for name, embedding, payload in concepts:
+            fresh.add(name, embedding, payload)
+        self.index = fresh
+
     def save(self, path: Path) -> None:
         self.index.save(path)
 
