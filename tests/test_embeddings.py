@@ -86,11 +86,14 @@ def test_every_key_is_unit_norm_and_deterministic():
 
 
 def test_committed_stats_are_the_fit_on_the_fixture():
+    # Within round-off, not bit for bit: summation order differs across CPUs (CI runs on
+    # Linux x86, the stats were fitted on macOS arm64); a changed feature or fixture moves
+    # a mean or std far more than 1e-9.
     fresh = M.EmbeddingStats.fit(VIEWS)
     stored = M.EmbeddingStats.load()
     for g in M.GROUPS:
-        assert np.array_equal(fresh.mean[g], stored.mean[g]), g
-        assert np.array_equal(fresh.std[g], stored.std[g]), g
+        np.testing.assert_allclose(fresh.mean[g], stored.mean[g], rtol=1e-9, atol=1e-12, err_msg=g)
+        np.testing.assert_allclose(fresh.std[g], stored.std[g], rtol=1e-9, atol=1e-12, err_msg=g)
 
 
 def test_same_class_probe_keys_are_closer_than_cross_class():

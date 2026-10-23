@@ -68,6 +68,7 @@ def test_the_cli_lists_the_demo_as_implemented():
     )
 
 
+@pytest.mark.render
 def test_the_video_grabs_overlay_frames(tmp_path):
     from PIL import Image
 
