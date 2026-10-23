@@ -369,7 +369,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Budget: ~60 min.
   - depends: T18
 
-- [ ] **T20 — Final docs: README, architecture, RuVector mapping, extension guide**
+- [x] **T20 — Final docs: README, architecture, RuVector mapping, extension guide**
   - Goal: a newcomer can install, run, understand, and extend the project in 15 minutes.
   - Deliverables:
     - `README.md`: what this is, a GIF/PNG, setup (`uv sync`; pip fallback `pip install -r requirements.txt`), `vfa demo`, how memory improves performance (with the measured numbers from `docs/RESULTS.md` only), macOS note about `mjpython` for the interactive viewer, and the project layout.

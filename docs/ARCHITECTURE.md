@@ -365,7 +365,7 @@ On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so 
 
 Source read: `github.com/ruvnet/ruvector`, `crates/ruvector-robotics/src/cognitive/` (local clone at `~/code/utilities/ruvector`). `docs/RUVECTOR_MAPPING.md` expands this table type by type, with the semantic differences and the drop-in plan.
 
-| Python (`vfa`) | Rust (`ruvector_robotics::cognitive`) | Notes |
+| Python (`vfa` subpackage; full module paths in `docs/RUVECTOR_MAPPING.md`) | Rust (`ruvector_robotics::cognitive`) | Notes |
 |---|---|---|
 | `memory.WorkingMemory` | `memory_system::WorkingMemory`, `MemoryItem` | same rule: evict the least-important item when full |
 | `memory.EpisodicMemory` | `memory_system::EpisodicMemory`, `Episode { percepts, actions, reward, timestamp }` | Rust `recall_similar` flattens `percepts` and uses a **raw dot product** → we store one unit-norm key as the single percept. One instance per key type. Rust `Episode` has no id/success: θ JSON + record id go in `actions`, signed outcome in `reward`, payloads in a Python side table |

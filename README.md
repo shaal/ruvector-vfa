@@ -47,7 +47,7 @@ uv sync                      # creates .venv with the project and its dev tools
 uv run vfa demo --quick      # 30 cubes: baselines vs memory, with the System 1 / System 2 log
 ```
 
-Without uv, use a Python 3.12 virtual environment and pip:
+Without uv, create a virtual environment with the Python version in `.python-version`, then use pip:
 
 ```bash
 python3.12 -m venv .venv && . .venv/bin/activate

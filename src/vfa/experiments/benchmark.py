@@ -1184,6 +1184,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"wrote {args.out / args.profile / 'metrics.json'}")
         return 0
     if command == "freeze":
+        parser = argparse.ArgumentParser(
+            description="write the benchmark hash over the frozen files (a planned re-freeze only)"
+        )
+        _task_option(parser)
+        parser.parse_args(argv)  # --help exits here, before anything is written
         if pick_place:
             PICK_PLACE_HASH.write_text(benchmark_hash(PICK_PLACE_FILES) + "\n")
             print(f"wrote {PICK_PLACE_HASH}: {PICK_PLACE_HASH.read_text().strip()}")
