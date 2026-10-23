@@ -266,7 +266,7 @@ PLACE_TOUCHDOWN_RADIUS = 0.04  # m
 # start slipped a heavy cube in the grip: 1.4-2.8x the static load) cannot set it (T19);
 # payload sag lowers the ee 3+ mm but keeps the load.
 # With sensor noise the load must also stay SETDOWN_NOISE_K σ of the filtered estimate
-# below that line (the slip detector's own margin): at 5 % below a 0.5 N reference, a
+# below that line (4, the slip detector's default noise_k): at 5 % below a 0.5 N reference, a
 # noise dip of two ticks set a cube down 1.6 cm in the air in 3 of 10 carries (T19).
 SETDOWN_LOAD = 0.95
 SETDOWN_S = 0.004  # two control ticks: shorter than the slip detector's 6 ms debounce

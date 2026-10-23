@@ -1079,8 +1079,11 @@ def build_parser() -> argparse.ArgumentParser:
 def _common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workers", type=int, default=default_workers())
     parser.add_argument("--deadline", type=float, default=DEFAULT_DEADLINE_S, help="seconds")
-    parser.add_argument("--out", type=Path, default=None, help="default runs/benchmark")
+    parser.add_argument("--out", type=Path, default=None, help=OUT_HELP)
     _task_option(parser)
+
+
+OUT_HELP = "output root (default runs/benchmark; with --task pick_place runs/benchmark_pick_place)"
 
 
 def _task_option(parser: argparse.ArgumentParser) -> None:
@@ -1107,8 +1110,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     def parse(parser: argparse.ArgumentParser) -> argparse.Namespace:
         """Parse, then resolve the default output root (pick_place has its own)."""
         args = parser.parse_args(argv)
-        if args.out is None:
-            args.out = PICK_PLACE_OUT if pick_place else DEFAULT_OUT
+        args.out = _out(config, DEFAULT_OUT if args.out is None else args.out)
         return args
 
     if pick_place and command not in ("run", "aggregate", "freeze"):
@@ -1158,7 +1160,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "aggregate":
         parser = argparse.ArgumentParser(description="aggregate chunk files into metrics.json")
         parser.add_argument("--profile", default="quick" if pick_place else "full")
-        parser.add_argument("--out", type=Path, default=None, help="default runs/benchmark")
+        parser.add_argument("--out", type=Path, default=None, help=OUT_HELP)
         parser.add_argument("--partial", action="store_true", help="allow missing conditions")
         _task_option(parser)
         args = parse(parser)
@@ -1216,6 +1218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "throughput":
         parser = argparse.ArgumentParser(description="wall time per attempt on one core")
         parser.add_argument("--attempts", type=int, default=60)
+        _task_option(parser)
         args = parser.parse_args(argv)
         print(json.dumps(throughput(config, args.attempts), indent=1))
         return 0
