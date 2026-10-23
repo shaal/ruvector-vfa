@@ -256,10 +256,13 @@ def env_seed(seed: int, index: int, attempt: int) -> int:
     return int(np.random.SeedSequence([seed, index, attempt]).generate_state(1, np.uint32)[0])
 
 
-def make_env(config: BenchmarkConfig) -> PandaVFAEnv:
-    """The benchmark env: lift, osc at 500 Hz, the skill's carries, safety on."""
+def make_env(config: BenchmarkConfig, **render: Any) -> PandaVFAEnv:
+    """The benchmark env: lift, osc at 500 Hz, the skill's carries, safety on
+    (``render``: ``render_mode`` and ``render_size`` for a video)."""
     sensors = SensorConfig(noise=NOISES[config.noise])
-    return PandaVFAEnv("lift", "osc", step_hz=500, auto_carry=False, sensor_config=sensors)
+    return PandaVFAEnv(
+        "lift", "osc", step_hz=500, auto_carry=False, sensor_config=sensors, **render
+    )
 
 
 # ------------------------------------------------------------------- attempts

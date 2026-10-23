@@ -11,11 +11,13 @@ from __future__ import annotations
 import json
 import logging
 
+import numpy as np
 import pytest
 
 from vfa import cli
 from vfa.experiments import demo
 from vfa.sim import objects as OB
+from vfa.viz import plots as P
 
 
 def records(results_by_cube: dict[int, list[str]], cls: str = "brittle") -> list[dict]:
@@ -60,12 +62,32 @@ def test_halves_and_tables():
     assert "memory_full" in demo.summary_table(metrics, 4)
 
 
-def test_the_cli_runs_the_demo_and_video_waits_for_t17(capsys):
-    assert cli.main(["demo", "--video"]) == 2
-    assert "T17" in capsys.readouterr().err
+def test_the_cli_lists_the_demo_as_implemented():
     assert "(not implemented yet)" not in "\n".join(
         cli._describe(n, h, t) for n, h, t in cli._SUBCOMMANDS if n == "demo"
     )
+
+
+def test_the_video_grabs_overlay_frames(tmp_path):
+    from PIL import Image
+
+    from vfa.sim.env import PandaVFAEnv
+    from vfa.viz.video import FrameGrab, write_gif
+
+    env = PandaVFAEnv(
+        "lift", "osc", step_hz=500, auto_carry=False, render_mode="rgb_array", render_size=(60, 80)
+    )
+    grab = FrameGrab(env, fps=50)  # a frame every 10 steps
+    grab.reset(seed=0)
+    for _ in range(10):
+        grab.step(np.zeros(4))
+    assert grab.frames == []  # not active
+    grab.active, grab.label = True, "cube 0, attempt 1"
+    for _ in range(20):
+        grab.step(np.zeros(4))
+    assert len(grab.frames) == 2 and grab.frames[0].size == (80, 60)
+    gif = write_gif(grab.frames, tmp_path / "a.gif", grab.fps)
+    assert Image.open(gif).n_frames == 2
 
 
 def test_an_existing_run_directory_is_refused(tmp_path, capsys):
@@ -104,3 +126,23 @@ def test_the_quick_demo(tmp_path, capsys):
     assert mem["second_half"] > naive["second_half"]
     assert (out / "memory" / "memory.json").exists() and (out / "handoffs.jsonl").exists()
     assert any((out / "episodes").iterdir())
+    # T17: every plot and the report, with the RuVector components section.
+    plots = {p.stem for p in (out / "plots").glob("*.png")}
+    assert plots == {
+        "force_overlay",
+        "retrieval_hits",
+        "learning_curves",
+        "embedding_map",
+        "mode_timeline",
+        "memory_tiers",
+    }
+    report = (out / "report.html").read_text()
+    assert report.count("data:image/png;base64,") == 6 and "<h2>RuVector components</h2>" in report
+    assert "Backend: <code>NumpyBackend</code>" in report and "skill_00" in report
+    assert len(metrics["tiers"]) == demo.QUICK_SITUATIONS and metrics["skills"]
+    run = P.Run.load(out)
+    ids = [r["memory_id"] for r in run.memory_records]
+    assert len(set(ids)) == len(ids) == len(run.memory_records)
+    failed, retry, hits = P.pick_retry(run)  # the force and retrieval plots have data
+    assert not failed["success"] and retry["success"] and hits
+    assert all(h["role"] == "success" and h["similarity"] >= 0.8 for h in hits)

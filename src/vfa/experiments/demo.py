@@ -24,10 +24,13 @@ backend, then runs three conditions on the same cubes of one benchmark seed
    condition) and a summary (success@1 overall and over the second half,
    success@k, attempts-to-success, break rate).
 
-It writes ``runs/demo-<timestamp>/``: ``metrics.json``, every attempt's record
-per condition (``records/``), the memory phase's episodes (``episodes/``), its
-handoff log (``handoffs.jsonl``), and the memory (``memory/``,
-``MemorySystem.save``). ``--video`` arrives with T17.
+It writes ``runs/demo-<timestamp>/``: ``metrics.json`` (with the item count per
+memory tier after each cube and the skill list), every attempt's record per
+condition (``records/``; the memory phase's carry their memory id), the memory
+phase's episodes (``episodes/``), its handoff log (``handoffs.jsonl``), the
+memory (``memory/``, ``MemorySystem.save``), the plots (``plots/``), and
+``report.html`` (``vfa.viz.report``). ``--video`` also writes ``attempts.gif``:
+every attempt of the first cube that needed a retry, with a force overlay.
 
 RuVector mapping: the banner lists the mapping of ARCHITECTURE §10. The memory
 phase runs ``CognitiveCore`` (``cognitive_core::CognitiveCore``) with
@@ -75,7 +78,7 @@ def build_parser(prog: str = "vfa demo") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=prog, description=__doc__.splitlines()[0])
     parser.add_argument("--quick", action="store_true", help=f"{QUICK_SITUATIONS} cubes")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="benchmark seed")
-    parser.add_argument("--video", action="store_true", help="a video of one attempt (T17)")
+    parser.add_argument("--video", action="store_true", help="a GIF of the first retried cube")
     parser.add_argument("--out", type=Path, default=None, help="run directory")
     parser.add_argument("--workers", type=int, default=B.default_workers())
     return parser
@@ -94,25 +97,46 @@ def run_baseline(condition: str, seed: int, start: int, end: int) -> list[dict[s
 
 
 def run_memory(
-    seed: int, n: int, run: Path, config: B.BenchmarkConfig, policy: S2.RetrievalPolicy
-) -> list[dict[str, Any]]:
-    """The memory phase in this process: logs visible, episodes and memory saved."""
+    seed: int,
+    n: int,
+    run: Path,
+    config: B.BenchmarkConfig,
+    policy: S2.RetrievalPolicy,
+    video: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, int]]]:
+    """The memory phase in this process: logs visible, episodes and memory saved.
+    Returns the records and the item count per memory tier after each cube."""
     from vfa.cognition.cognitive_core import CognitiveCore
     from vfa.cognition.retry import solve_situation
     from vfa.sim import objects as OB
     from vfa.skills.pick import GraspLiftSkill
 
-    env = B.make_env(config)
+    if video:
+        from vfa.viz.video import FrameGrab
+
+        env: Any = FrameGrab(B.make_env(config, render_mode="rgb_array", render_size=(240, 320)))
+    else:
+        env = B.make_env(config)
     skill = GraspLiftSkill()
     core = CognitiveCore(policy, log_path=run / "handoffs.jsonl")
     episodes = run / "episodes"
     records: list[dict[str, Any]] = []
+    tiers: list[dict[str, int]] = []
     for situation in B.make_situations(seed, n, OB.load_object_config()):
 
         def score(result, attempt, situation=situation) -> None:
-            records.append(B.attempt_record(result, situation, attempt))
+            record = B.attempt_record(result, situation, attempt)
+            record["memory_id"] = next(reversed(policy.memory.episodic.records))  # just stored
+            records.append(record)
             if result.episode is not None:
                 result.episode.save(episodes / f"cube{situation.index:03d}_a{attempt}")
+            if video:
+                env.label = f"cube {situation.index}, attempt {attempt + 1}"
+
+        if video:
+            env.active = not (run / "attempts.gif").exists()
+            env.frames.clear()
+            env.label = f"cube {situation.index}, attempt 1"
 
         results = solve_situation(
             env,
@@ -124,6 +148,19 @@ def run_memory(
             options={"object": situation.spec},
             on_attempt=score,
         )
+        tiers.append(
+            {
+                "cube": situation.index,
+                "episodic": len(policy.memory.episodic),
+                "semantic": len(policy.memory.semantic),
+                "working": len(policy.memory.working),
+            }
+        )
+        if video and env.active and len(results) > 1:  # the first cube that needed a retry
+            from vfa.viz.video import write_gif
+
+            write_gif(env.frames, run / "attempts.gif", env.fps)
+            env.active = False
         last = results[-1]
         outcome = f"solved at attempt {len(results)}" if last.success else "not solved"
         path = " → ".join(SHORT.get(r.result, r.result.lower()) for r in results)
@@ -134,8 +171,9 @@ def run_memory(
         )
     if policy.situations % S2.CONSOLIDATE_EVERY:  # a last one, unless the cadence just ran
         policy.library.consolidate(policy.memory)
+        tiers[-1]["semantic"] = len(policy.memory.semantic)
     policy.memory.save(run / "memory")
-    return records
+    return records, tiers
 
 
 def halves(records: Sequence[dict[str, Any]], n: int) -> tuple[float, float]:
@@ -194,9 +232,6 @@ def _hide_ground_truth(record: logging.LogRecord) -> bool:
 
 def main(argv: Sequence[str] | None = None, prog: str = "vfa demo") -> int:
     args = build_parser(prog).parse_args(argv)
-    if args.video:
-        print("--video arrives with T17 (vfa.viz.video)", file=sys.stderr)
-        return 2
     config = B.load_benchmark_config()
     n = QUICK_SITUATIONS if args.quick else FULL_SITUATIONS
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -235,7 +270,7 @@ def _run(args: argparse.Namespace, config: B.BenchmarkConfig, run: Path, n: int)
     with ProcessPoolExecutor(max_workers=max(1, min(args.workers, len(jobs)))) as pool:
         futures = [(c, pool.submit(run_baseline, c, *rest)) for c, *rest in jobs]
         print("memory_full: empty memory, System 2 retrieves at every probe\n", flush=True)
-        memory_records = run_memory(args.seed, n, run, config, policy)
+        memory_records, tiers = run_memory(args.seed, n, run, config, policy, args.video)
         by_condition: dict[str, list[dict[str, Any]]] = {c: [] for c in BASELINES}
         for c, future in futures:
             by_condition[c] += future.result()
@@ -255,8 +290,18 @@ def _run(args: argparse.Namespace, config: B.BenchmarkConfig, run: Path, n: int)
             "situations": n,
             "max_attempts": config.max_attempts,
             "wall_s": wall,
-            "skills": len(policy.library),
+            "backend": type(policy.memory.semantic.index).__name__,
             "memory_records": len(policy.memory.episodic),
+            "tiers": tiers,
+            "skills": [
+                {
+                    "name": name,
+                    "members": len(policy.memory.semantic.retrieve(name)[1]["members"]),
+                    "confidence": policy.library.get(name).confidence,
+                    "grip_force": policy.library.get(name).theta["grip_force"],
+                }
+                for name in policy.memory.semantic.index.ids
+            ],
             "conditions": metrics,
         },
     )
@@ -272,7 +317,13 @@ def _run(args: argparse.Namespace, config: B.BenchmarkConfig, run: Path, n: int)
         f"{mem['second_half']:.3f} vs {naive['second_half']:.3f}. "
         f"Memory holds {len(policy.memory.episodic)} attempts and {len(policy.library)} skills."
     )
-    print(f"Wrote {run} in {wall:.0f} s.")
+    from vfa.viz.report import write_report
+
+    report = write_report(run)
+    print(f"Wrote {run} in {wall:.0f} s; report: {report}")
+    if args.video:
+        gif = run / "attempts.gif"
+        print(f"video: {gif}" if gif.exists() else "video: no cube needed a retry")
     return 0
 
 

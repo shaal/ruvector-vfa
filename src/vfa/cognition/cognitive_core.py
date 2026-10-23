@@ -143,6 +143,7 @@ class Decision:
     reasoning: str = ""
     utility: float = 0.0
     retrieved: tuple[str, ...] = ()  # memory record ids the choice used
+    evidence: tuple[Mapping[str, Any], ...] = ()  # what the policy weighed (logged)
 
 
 @dataclass(slots=True)
@@ -296,7 +297,8 @@ class CognitiveCore:
                 decision.theta.to_dict(),
                 list(decision.retrieved),
                 latency,
-                {"reasoning": decision.reasoning},
+                {"reasoning": decision.reasoning}
+                | ({"evidence": [dict(e) for e in decision.evidence]} if decision.evidence else {}),
             )
         )
         logger.info(

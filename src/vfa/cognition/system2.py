@@ -56,9 +56,12 @@ skills, which average the chosen θ), under ``key_pre``, ``full_embedding``,
 ``key_probe`` (once the probe finished), and ``key_retry`` (failures). The
 records a decision used (its ``Decision.retrieved``: the success neighbours
 whose center set the grip, and the failures that set a bound) are reinforced
-with the outcome. ``end_situation`` consolidates the skills every
-``CONSOLIDATE_EVERY`` situations. With ``keys="context"`` (``memory_ctx_only``,
-the force ablation) every key is the context key ``key_pre``.
+with the outcome. ``Decision.evidence`` lists what the probe decision weighed
+(this cube's own failures, the strong success and failure neighbours, with
+their similarity, result, and grip); the handoff log keeps it (T17's plots).
+``end_situation`` consolidates the skills every ``CONSOLIDATE_EVERY`` situations.
+With ``keys="context"`` (``memory_ctx_only``, the force ablation) every key is
+the context key ``key_pre``.
 
 The thresholds were set before the first benchmark run on the ``quick``
 profile, which T10 keeps for tuning. On the calibration fixture's 243 probed
@@ -332,7 +335,20 @@ class RetrievalPolicy:
             f"({len(successes)} successes, {len(window.used)} bounds"
             f"{', skill' if semantic is not None and how == 'center' else ''})"
         )
-        return Decision(chosen, PROBE, reason, utility=best * confidence, retrieved=used)
+        evidence = tuple(
+            {
+                "id": e.id,
+                "role": role,
+                "similarity": round(e.similarity, 4),
+                "result": e.result,
+                "grip": round(e.grip, 3),
+            }
+            for role, group in (("own", own), ("success", successes), ("failure", failures))
+            for e in group
+        )
+        return Decision(
+            chosen, PROBE, reason, utility=best * confidence, retrieved=used, evidence=evidence
+        )
 
     def _escalation(self, theta: SkillParams) -> Decision:
         high = GRIP_HIGH if self._window is None else self._window.high
