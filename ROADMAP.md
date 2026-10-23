@@ -385,7 +385,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
 
 ## Phase F — Stretch: residual learning and the real RuVector backend
 
-- [ ] **T21 — Residual System 1 policy (numpy evolution strategies)**
+- [x] **T21 — Residual System 1 policy (numpy evolution strategies)**
   - Goal: the "simple RL / residual learning" layer from the brief — learn a small correction on top of the impedance controller.
   - Deliverables:
     - `vfa/skills/residual.py`: a linear residual policy that maps tared F/T features, slip signal, and phase one-hot to Δgrip-force and Δz-velocity during `SQUEEZE`, `LIFT`, and `HOLD`. Bounded output. Off by default.
@@ -397,6 +397,18 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Verify: `uv run python -m vfa.experiments.train_residual --quick --workers 8` (≤ 9 min; full training is chunked and resumable by ES generation), then the benchmark quick profile for both conditions.
   - Budget: ~60 min.
   - depends: T20
+
+- [ ] **T21-b — Residual trained on memory's chosen grips (target follow-up)**
+  - Goal: the T21 target, after its miss (docs/RESULTS.md §11.4–11.5).
+  - Hypothesis: T21's mean force jerk is set by a few slip rescues (100–338 N/s: `heavy_slippery` first attempts, `brittle` retries), while the median already fell 22 %. The training replay used each attempt's final θ, which holds the rescued grip, so it held almost no slips, and ES learned to raise the grip *more slowly* while slipping (slip weight −0.62). Training on the θ memory chose at the probe puts the slips and their rescues in the replay; ES should then learn a fast rescue on a rising slip signal, which removes the stick-slip tails that dominate the mean.
+  - Deliverables:
+    - Record the θ of the probe decision in each benchmark attempt record (`theta_chosen`), and build the trainer's replay from it.
+    - Retrain with T21's other settings unchanged (fixed before the run), install the weights, and record the curve.
+  - Acceptance:
+    - Target (unchanged): `memory_full+residual` force jerk (mean over seeds) ≥ 20 % lower than `memory_full` with success@1 not lower by more than 3 points.
+    - Scored once on the `full` profile (the evaluation seeds; quick was used to diagnose T21). If this also misses, fail the gate (CLAUDE.md).
+  - Verify: `uv run python -m vfa.experiments.train_residual --workers 8` (re-run until done, then `--install`), then the benchmark `full` profile for both conditions.
+  - depends: T21
 
 - [ ] **T22 — Real RuVector backend: PyO3 binding over `ruvector-robotics`**
   - Goal: prove the drop-in hooks — run the same memory through the actual Rust crate.

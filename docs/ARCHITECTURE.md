@@ -1,6 +1,6 @@
 # Architecture — ruvector-vfa
 
-Status: **as built through T19** (T20 brought this file in line with the code). Each section states the design, then "As built in Txx" paragraphs record what the code does and what changed; measured numbers live in `docs/RESULTS.md`. Not built yet: the residual policy (T21), the Rust backend (T22), and T23–T24. Section numbers are referenced from `ROADMAP.md`; keep them stable.
+Status: **as built through T21** (T20 brought this file in line with the code). Each section states the design, then "As built in Txx" paragraphs record what the code does and what changed; measured numbers live in `docs/RESULTS.md`. Not built yet: T21's follow-up (T21-b), the Rust backend (T22), and T23–T24. Section numbers are referenced from `ROADMAP.md`; keep them stable.
 
 ---
 
@@ -285,6 +285,8 @@ At the start (and the retry start) System 2 keeps the default θ; the decision t
 
 **As built in T14** (`vfa/cognition/cognitive_core.py`). `CognitiveCore.run_attempt` resets the env to show System 2 the cube, decides θ, and calls T08's `run_attempt`, which resets again with the same seed (same cube; a reset costs about 11–12 ms). The failure trigger is the start of the retry. Escalations reach System 2 through the skill's callback between two `env.step` calls; fields that already ran keep their values, and an unchanged θ goes back as `None`. Percepts are observable only: probe and escalation percepts carry an `EpisodeView` of the attempt so far; a retry sees an `ObservedAttempt` (result with SLIP and DROP merged, θ, probe, an `EpisodeView`), never the recorded episode, which holds the hidden class. A safety stop sets `EMERGENCY` until the next attempt. Each step is a line in `handoffs.jsonl` (with `log_path`). The stub policy returns the naive θ at start and keeps the θ in force later.
 
+**As built in T21** (`vfa/skills/residual.py`, `vfa/experiments/train_residual.py`). A learned residual is part of System 1 and is off by default. It is a linear map from the phase one-hot, the tared wrist Fz and ‖Fxy‖, the held load, and the slip signal to two bounded outputs. The first is a per-tick step limit on how fast the grip command may rise toward System 1's command (a lower command applies at once). The second is a vertical velocity in LIFT and HOLD, integrated into a clamped offset. θ and its record stay System 1's. A step limit, not an offset: a probe showed the jerk comes from how fast the grip rises (RESULTS §11.2). Numpy ES trains it on memory's grasps from the calibration seeds. On quick it lowered the median jerk 22 % but missed the mean-jerk target, because slip rescues dominate the mean (§11.4–11.5; follow-up T21-b, D22).
+
 ---
 
 ## 7. Retrieval-augmented adaptation and retry (T15)
@@ -342,7 +344,7 @@ On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so 
 | `bandit_flat` | `bandit` with one bucket: an online learner of the single best θ (T17a) |
 | `memory_ctx_only` | full retrieval policy, but every key uses context features only — **the force ablation** |
 | `memory_full` | full retrieval policy with force features |
-| `memory_full+residual` | plus the learned residual (planned, T21) |
+| `memory_full+residual` | `memory_full` over a skill with the learned residual (T21) |
 | `memory_no_reinforce` | `memory_full` with utility fixed at 0.5: ranking by similarity only (T18 component ablation) |
 | `memory_no_semantic` | `memory_full` without consolidation or `SkillLibrary`; episodic hits only (T18) |
 | `memory_no_probe` | `memory_full` without the System 2 decision at `PROBE_DONE` (T18) |
@@ -399,15 +401,15 @@ src/vfa/
   cli.py                  # `vfa` entry point (demo, benchmark, scene-check)
   sim/                    # scene.py (MjSpec), scene_check.py, objects.py, sensors.py, recorder.py, env.py
   control/                # osc.py, gripper.py, throughput.py (T03 timing CLI), safety.py
-  skills/                 # params.py, pick.py, place.py (T19), reflexes.py; residual.py (planned, T21)
+  skills/                 # params.py, pick.py, place.py (T19), reflexes.py, residual.py (T21)
   memory/                 # embeddings.py, backend.py, memory_system.py, skill_learning.py; ruvector_backend.py (planned, T22)
   cognition/              # cognitive_core.py, system2.py, retry.py
-  experiments/            # baselines.py, bandit.py, benchmark.py, demo.py, run_all.py; train_residual.py (planned, T21)
+  experiments/            # baselines.py, bandit.py, benchmark.py, demo.py, run_all.py, train_residual.py (T21)
   viz/                    # force_plot.py, plots.py, video.py, report.py
 assets/menagerie/franka_emika_panda/   # vendored, pristine, Apache-2.0
 configs/                  # objects.toml, benchmark.toml, best_fixed.toml, benchmark.sha256, embedding_stats.npz, bandit.toml (T17a),
-                          # benchmark_pick_place.toml + .sha256, embedding_stats_place.npz (T19)
-scripts/                  # spike_grip.py (T05), record_episode.py and size_slip_detector.py (T06), make_fixtures.py and probe_classes.py (T10), sweep_place.py (T19)
+                          # benchmark_pick_place.toml + .sha256, embedding_stats_place.npz (T19), residual.npz (T21)
+scripts/                  # spike_grip.py (T05), record_episode.py and size_slip_detector.py (T06), make_fixtures.py and probe_classes.py (T10), sweep_place.py (T19), probe_residual.py (T21)
 rust/ruvector_vfa_py/     # planned, T22
 tests/                    # fixtures/calib_episodes.npz (committed, ≤ 5 MB)
 docs/                     # BRIEF, ARCHITECTURE, FEASIBILITY, RESULTS, RUVECTOR_MAPPING, EXTENDING
@@ -441,3 +443,4 @@ runs/                     # git-ignored artifacts
 | D19 | Thompson-sampling bandit baselines (`bandit`, `bandit_flat`) ported from `ruvector-domain-expansion`, with numpy's exact Beta draws (T17a) | the bandit learns from success and failure like memory but has no similarity search over force, so memory beating it shows that the gain comes from RuVector-style retrieval, not from learning alone; the crate's approximate sampler is not a Beta draw (on a Python transcription of it, Beta(1, 1) gives variance 0.128 instead of 0.083) |
 | D20 | Pre-register T18's targets, held-out design, and ablation verdict rule before the first run on the evaluation seeds; judge a component by paired bootstrap intervals over situations | the evaluation seeds are scored once, so every rule that reads them must be fixed first; 3 seeds give too little spread to choose a wording after the fact |
 | D21 | Pick-and-place gets a table-impact break rule, its own benchmark file and hash, and its own place-phase key group; the lift benchmark, its rule, and its keys stay as they were (T19) | at the hand-picked grips the finger forces at the place stayed below every break force (at most 9.2 N on `brittle`, RESULTS §10.1), so without an impact rule `place_speed` and `release_height` would not matter; keeping the lift's rule, vectors, and keys unchanged leaves every lift result unchanged (1,143 quick attempts compared: no difference) |
+| D22 | The T21 residual shapes how fast the grip rises (a bounded step limit on the grip command), and it trains on replays of memory's own grasps on the calibration seeds | a constant offset per phase cut the jerk 7 % on memory's grasps, while limiting every rise to 10 N/s cut it 24 % (RESULTS §11.2); replaying memory's grasps gives the residual the grips it will meet without putting System 2 in the ES loop or using a class label |

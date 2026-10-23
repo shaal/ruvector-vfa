@@ -16,11 +16,12 @@ carry (0 otherwise, clipped to [0, 1]; it rises as the cube slides in the grip).
   ``STEP_MAX · sigmoid(z_grip)`` N per finger per control tick (at most 50 N/s;
   a lower command applies at once). At ``W = 0`` the step allows 25 N/s, the
   gripper's own squeeze ramp at the default 0.1 m/s closing speed, so an
-  untrained residual changes little. A step limit, not an additive offset: the
-  T21 probes on the calibration replay showed that the jerk comes from how fast
-  the grip rises (the squeeze ramp and the reflex raises: 52 % and 48 % of
-  jerk²), which an offset per phase cannot shape (−7 % at best), while limiting
-  every rise to 10 N/s cut the jerk 24 % for 0.7 points of success
+  untrained residual changes little. A step limit, not an additive offset: on
+  memory's grasps from the calibration seeds (``scripts/probe_residual.py``) the
+  jerk² comes about equally from SQUEEZE (the squeeze ramp) and LIFT (where the
+  grip rises only through slip-reflex raises and escalations, besides sensor
+  noise). A constant 2 N less in SQUEEZE cut the jerk 7 %, while limiting every
+  rise to 10 N/s cut it 24 % for 0.7 points of success
   (docs/RESULTS.md §11).
 - Δz-velocity: ``VZ_MAX · tanh(z_z)`` m/s added to the ee target's vertical
   motion in LIFT and HOLD only (in SQUEEZE the hand rests on the cube at the
@@ -66,7 +67,7 @@ VZ_MAX = 0.02  # m/s
 Z_OFFSET = (-0.005, 0.02)  # m: the clamp of the integrated vertical offset
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True, frozen=True, eq=False)
 class ResidualPolicy:
     """The linear residual (refer to the module doc); ``weights`` is (2, 7)."""
 
@@ -79,6 +80,11 @@ class ResidualPolicy:
         w = w.copy()
         w.setflags(write=False)
         object.__setattr__(self, "weights", w)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, ResidualPolicy) and np.array_equal(self.weights, other.weights)
+
+    __hash__ = None  # type: ignore[assignment]
 
     @classmethod
     def from_vector(cls, vector: Any) -> ResidualPolicy:
@@ -132,7 +138,7 @@ def features(
     x = np.zeros(len(FEATURES))
     if phase in PHASES:
         x[PHASES.index(phase)] = 1.0
-    fz, fx, fy = (float(v) for v in np.asarray(wrench, dtype=float)[:3])
+    fx, fy, fz = (float(v) for v in np.asarray(wrench, dtype=float)[:3])  # world axes
     x[3] = fz / FORCE_SCALE if math.isfinite(fz) else 0.0
     fxy = math.hypot(fx, fy)
     x[4] = fxy / FORCE_SCALE if math.isfinite(fxy) else 0.0
