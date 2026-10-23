@@ -74,6 +74,9 @@ def test_targets_use_the_like_for_like_bar():
     t = R.targets(full)
     assert not t["success_at_1_late"]["met"]  # between the loose 0.800 and the bar 0.808
     assert t["attempts_to_success"]["met"] and t["gentler_force"]["met"]
+    full["memory_full"] = stats(0.81, 0.8, 1.2, 11.0, 36.0)
+    assert R.targets(full)["success_at_1_late"]["met"]  # above both bars
+    full["memory_full"] = stats(0.805, 0.8, 1.2, 11.0, 36.0)
     full["best_fixed"] = stats(0.640, 0.660, 2.7, 5.0, 38.0)  # now the loose bar is higher
     t = R.targets(full)
     assert t["success_at_1_late"]["bar"] < 0.805 < t["success_at_1_late"]["loose_bar"]

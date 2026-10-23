@@ -367,6 +367,10 @@ def figures(
     fig_out = out / "t18_figures"
     save = (fig_out / "episodes").resolve()
     conditions = ("random_retry", "memory_full")
+    scored_jobs = {c: B.plan_condition(config, c, "full", [seed], out=out) for c in conditions}
+    if not all(B._chunk_done(Path(j.path), j.key) for js in scored_jobs.values() for j in js):
+        print("the scored chunks are missing or stale: run `run_all` first", file=sys.stderr)
+        return 3
     jobs = {
         c: B.plan_condition(config, c, "full", [seed], out=fig_out, save_episodes=str(save))
         for c in conditions
@@ -375,13 +379,17 @@ def figures(
         return 3
     records = {}
     for c in conditions:
-        scored = B.load_records(B.plan_condition(config, c, "full", [seed], out=out))[seed]
+        scored = B.load_records(scored_jobs[c])[seed]
         rerun = B.load_records(jobs[c])[seed]
         if _strip(scored) != _strip(rerun):
             print(f"{c}: the re-run differs from the scored chunk", file=sys.stderr)
             return 4
         records[c] = rerun
-    force_figure(records, save, seed, figures_dir / "t18_force_profiles.png")
+    try:
+        force_figure(records, save, seed, figures_dir / "t18_force_profiles.png")
+    except (OSError, ValueError) as exc:  # an episode file is missing: delete the chunks
+        print(f"{exc}; delete {fig_out} and re-run `run_all figures`", file=sys.stderr)
+        return 3
     print(f"wrote {figures_dir / 't18_force_profiles.png'}")
     return 0
 
@@ -443,7 +451,8 @@ def force_figure(
                     f"excess {r['peak_force_excess']:.1f} N"
                 ),
             )
-        ax.set_title(f"{cls}, situation {i}", fontsize=9)
+        note = "" if differ else " (grips < 1 N apart)"
+        ax.set_title(f"{cls}, situation {i}{note}", fontsize=9)
         ax.set_ylim(0.0, top * 1.45)  # room for the legend above the curves
         ax.legend(fontsize=7, loc="upper left")
         ax.grid(alpha=0.3)
@@ -517,7 +526,7 @@ def print_tables(result: Mapping[str, Any]) -> None:
     s = t["success_at_1_late"]
     print(
         f"\ntarget 1 {'MET' if s['met'] else 'MISSED'}: memory_full success@1 21-60 "
-        f"{s['value']:.3f} vs bar {s['bar']:.3f} (looser bar {s['loose_bar']:.3f})"
+        f"{s['value']:.3f} vs bars {s['bar']:.3f} (21-60) and {s['loose_bar']:.3f} (overall)"
     )
     a = t["attempts_to_success"]
     print(

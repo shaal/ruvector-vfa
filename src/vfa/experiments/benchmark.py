@@ -556,8 +556,10 @@ def plan_condition(
     code = code_fingerprint()
     extra: dict[str, Any] = {}
     if condition == FROZEN:
-        if WARMUP["seed"] in seeds:
-            raise ValueError(f"{FROZEN} needs seeds other than its warm-up seed {WARMUP['seed']}")
+        if WARMUP["seed"] in prof.seeds or WARMUP["seed"] in seeds:
+            raise ValueError(
+                f"{FROZEN} needs a profile without its warm-up seed {WARMUP['seed']} (use heldout)"
+            )
         extra["warmup"] = dict(WARMUP)
     if condition in BANDIT_CONDITIONS:
         from vfa.experiments import bandit
@@ -975,14 +977,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         allowed = config.profiles[args.profile].seeds
         if args.seed and not set(args.seed) <= set(allowed):
             raise SystemExit(f"--seed must be among the {args.profile} seeds {list(allowed)}")
-        jobs = plan_condition(
-            config,
-            args.condition,
-            args.profile,
-            args.seed,
-            args.out,
-            None if args.save_episodes is None else str(Path(args.save_episodes).resolve()),
-        )
+        try:
+            jobs = plan_condition(
+                config,
+                args.condition,
+                args.profile,
+                args.seed,
+                args.out,
+                None if args.save_episodes is None else str(Path(args.save_episodes).resolve()),
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         if args.save_episodes is not None:
             skipped = sum(_chunk_done(Path(j.path), j.key) for j in jobs)
             if skipped:

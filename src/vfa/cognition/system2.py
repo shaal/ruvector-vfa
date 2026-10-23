@@ -73,7 +73,8 @@ neighbour repeats the default grip; ``probe_trigger=False`` keeps θ at
 ``PROBE`` and makes the whole proposal at ``FAILURE`` instead, from the failed
 attempt's ``key_probe`` (its own failures only, after a probe-less ``MISS``);
 ``START`` keeps the default θ as always, so a first attempt runs ``naive``'s θ
-until a slip escalation, which raises the grip as in ``memory_full``.
+until a slip escalation, which raises the grip toward 25 N (no probe window
+caps it, unlike in ``memory_full``).
 
 **Frozen memory** (``freeze()``, T18's held-out run): nothing is stored,
 reinforced, or consolidated any more. The attempts at the current cube go to
@@ -505,7 +506,7 @@ class RetrievalPolicy:
             rid,
             observed.result,
             observed.theta_final.grip_force,
-            len(set(used)),
+            len(set(used)) if self.reinforce else 0,
             "+" if observed.success else "−",
         )
         return rid

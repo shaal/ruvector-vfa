@@ -152,3 +152,5 @@ def test_the_benchmark_maps_each_ablation_to_one_flag(tmp_path):
     assert jobs[0].key["warmup"] == {"seed": 1000, "situations": 60}
     with pytest.raises(ValueError, match="warm-up"):
         B.plan_condition(config, B.FROZEN, "full", out=tmp_path)
+    with pytest.raises(ValueError, match="warm-up"):  # a seed filter does not get around it
+        B.plan_condition(config, B.FROZEN, "full", seeds=[1001], out=tmp_path)
