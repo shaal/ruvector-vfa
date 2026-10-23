@@ -1,6 +1,6 @@
 # Architecture — ruvector-vfa
 
-Status: **design (pre-implementation)**. Each ROADMAP task implements one part. T20 updates this file to match the code as built. Section numbers are referenced from `ROADMAP.md`; keep them stable.
+Status: **as built through T19** (T20 brought this file in line with the code). Each section states the design, then "As built in Txx" paragraphs record what the code does and what changed; measured numbers live in `docs/RESULTS.md`. Not built yet: the residual policy (T21), the Rust backend (T22), and T23–T24. Section numbers are referenced from `ROADMAP.md`; keep them stable.
 
 ---
 
@@ -14,7 +14,7 @@ This project tests one claim in simulation:
 
 **A robot that stores force-rich experiences in a vector memory, and retrieves similar ones before and during each attempt, succeeds sooner and grips more gently than a robot that does not.**
 
-The memory and cognition layers mirror the `ruvector-robotics` Rust crate (`MemorySystem`, `CognitiveCore`, `SkillLearning`). The Python implementation is a stand-in with the same shapes, so the real crate can replace it (T22).
+The memory and cognition layers mirror the `ruvector-robotics` Rust crate (its `memory_system`, `cognitive_core`, and `skill_learning` modules: `EpisodicMemory`, `SemanticMemory`, `CognitiveCore`, `SkillLibrary`). The Python implementation is a stand-in with the same shapes, so the real crate can replace it (T22).
 
 ---
 
@@ -31,7 +31,7 @@ The memory and cognition layers mirror the `ruvector-robotics` Rust crate (`Memo
                          │            ▲                    │ θ           │
                          │            │ percepts, events   ▼             │
                          │   SYSTEM 1 — REACTIVE (control rate)          │
-                         │   GraspLiftSkill phase machine + slip reflex  │
+                         │   GraspLiftSkill / PickPlaceSkill + reflex    │
                          │   → OperationalSpaceController (impedance)    │
                          └────────────┬───────────────────────▲─────────┘
                                       │ torques, grip         │ wrench, contacts,
@@ -46,9 +46,17 @@ The memory and cognition layers mirror the `ruvector-robotics` Rust crate (`Memo
                          ┌──────────────────────────────────────────────┐
                          │  MemorySystem (memory/)                       │
                          │  Working · Episodic · Semantic (SkillLibrary) │
-                         │  MemoryBackend: NumpyBackend | RuVectorBackend│
+                         │  MemoryBackend: NumpyBackend (Rust: T22)      │
                          └──────────────────────────────────────────────┘
 ```
+
+**One attempt, as built** (`CognitiveCore.run_attempt`, `retry.solve_situation`):
+
+1. System 2 decides at the attempt start (or at the retry start after a failure) on the observed cube.
+2. System 1 approaches, descends, and runs the touch-and-heft probe; `PROBE_DONE` hands its force features to System 2.
+3. System 2 builds `key_probe` from the recording so far, retrieves similar attempts, and returns θ for the rest of the attempt.
+4. System 1 squeezes, lifts (and on pick-and-place carries and places), with the slip reflex; an unrecovered slip escalates to System 2 once.
+5. The env ends the attempt (success, a failure, or a safety stop); the policy stores it under its keys and reinforces the records its decisions used. Every few situations the skill library consolidates successes.
 
 **Rates.** Physics `dt = 2 ms` (500 Hz). The OSC torque law, the skill phase machine, the reflexes, and the safety check run at `control_hz` (100–500 Hz; torques are held across physics substeps). T03 picked the highest `control_hz` that keeps simulation ≥ 10× faster than real time on one core: **`control_hz = 500`** (`vfa.control.osc.CONTROL_HZ`), one control tick per physics step. Measured with `uv run python -m vfa.control.throughput` (a 10 s scripted grasp-and-lift under OSC + gripper, best of 5, Apple M3 Max, load average ≈ 4.5): 0.43 s wall at 500 Hz (23×), 0.29 s at 250 Hz (35×), 0.20 s at 100 Hz (51×); CPU time equals wall time (one core). Machine load moves these numbers a lot: at load ≈ 9.6 the same CLI measured 0.73 s at 500 Hz and the pytest `perf` test 0.84 s (12×). Per tick at 500 Hz (≈ 88 µs, instrumented at load ≈ 4.5): physics (`mj_step1` + `mj_step2`, with contacts) ≈ 29 µs, `OperationalSpaceController.compute` ≈ 37 µs, `advance_reference` ≈ 6 µs, `set_target` with the scripted path ≈ 14 µs, `Gripper.apply` ≈ 2 µs; `control_step`'s own checks add ≈ 4 µs on top. The default 10 s episode is the benchmark; in longer runs the cube slips out of the 1 N grip, so they mostly time a contact-free hold. **Headroom for T06.** Naive sensor reads cost ≈ 72 µs per tick in the grasp (32 active contacts): an extra `mj_forward` ≈ 33 µs, `finger_cube_forces` ≈ 36 µs, wrist F/T + touch + ee velocity ≈ 2.4 µs. That is ≈ 0.36 s per 10 s episode: it fits at low load (≈ 0.8 s) but misses 10× under heavy load. T06 should skip the extra `mj_forward` (after `control_step`, the contacts, constraint forces, and `sensordata` describe the start of the last physics step, 2 ms old), then re-measure. If 500 Hz still misses 10×, drop to 250 Hz. **T06 measured it: 500 Hz stays.** The sensors are read from one `sensordata` copy with no extra `mj_forward`, and `finger_cube_forces` is vectorized (55 → 13 µs per call with 36 contacts, bit-exact; §3). Per tick in the grasp (36 contacts, load ≈ 7): `SensorSuite.read` ≈ 9.4 µs, `read_privileged` with the cube contact forces ≈ 14 µs, the event detector ≈ 0.5 µs, the recorder ≈ 2.2 µs. `uv run python -m vfa.control.throughput --sense` (best of 5, the two modes alternating run by run): at load ≈ 8, 0.440 s per 10 s episode without sensing (22.7×) and 0.628 s with the whole T06 stack (15.9×) at 500 Hz, 0.274 / 0.363 s at 250 Hz; at load ≈ 14 an earlier build measured 0.592 / 0.818 s (12.2×) at 500 Hz. `control_hz` below 100 Hz is rejected (`MIN_CONTROL_HZ`) to keep a stability margin. Measured at the 8 box corners after 2 s: at the default gains 50 Hz still ends ≤ 3.0 mm off, but 25 Hz misses 6 of 8 corners (up to 45 mm / 20°). At 4× the default stiffness 100 Hz ends ≤ 0.3 mm off, while 50 Hz saturates the motors and misses one corner (12 mm / 5.1°). System 2 runs only at its three triggers, never inside a control tick. The Gymnasium `osc` action interface steps at 50 Hz for RL users.
 
@@ -186,7 +194,7 @@ System 2 reads the probe (`PROBE_DONE`) and sets θ for the rest of the attempt.
 | `DROP` | F/T + accelerometer | during a carry: the held load below 0.3 × its carried peak (the event detector's own, per carry; a reflex `rearm` does not lower it) for 20 ms, once that peak passed 0.15 N; once per carry; never in or after a release phase (`PLACE`, `RELEASE`) until the next carry. A watch left on from an earlier grasp does not count |
 | `BREAK` | ground truth | the break monitor's flag (stamped with `break_time`) |
 | `LIFTED` | ground truth | with a pad in contact, the unbroken cube's center 2 cm above its rest height (T05's SLIP/DROP line): a lift-off; again after the cube rested on the table, so a heft that raises the center 2 cm and the real lift each report one (with the arm's payload sag a 2 cm heft reports one in about a third of cases: every `light_rigid` cube, no heavy one; a 1 cm heft never) |
-| `PLACED` | ground truth | after a `LIFTED`: resting (within `REST_SINK_BAND`, below 1 cm/s, a face within 10° of flat), within 2 cm of the place target, unbroken, no pad contact; once (T19 may refine it). A cube dropped onto the target reports `DROP` and then `PLACED`: scoring must not take `PLACED` alone as success |
+| `PLACED` | ground truth | after a `LIFTED`: resting (within `REST_SINK_BAND`, below 1 cm/s, a face within 10° of flat), within 2 cm of the place target, unbroken, no pad contact; once (T19 kept it: the place verdict reads the last touchdown, §3). A cube dropped onto the target reports `DROP` and then `PLACED`: scoring must not take `PLACED` alone as success |
 | `SAFETY_STOP` | T09 supervisor | reported through `EventDetector.report`, logged on `[SAFETY]` |
 
 Every event is logged at INFO on `[S1]` (`SAFETY_STOP` on `[SAFETY]`). Frames must arrive in time order (`reset()` for a new episode).
@@ -199,7 +207,7 @@ Every event is logged at INFO on `[S1]` (`SAFETY_STOP` on `[SAFETY]`). Frames mu
 
 ### 5.1 Embeddings and retrieval keys (T11)
 
-The memory stores **what was available at each decision point**, not only the final episode. Before an attempt only the context exists; after the probe, the probe forces exist; at a retry, the whole failed attempt exists. Each key type has its own index (and, in the Rust backend, its own `EpisodicMemory` instance).
+The memory stores **what was available at each decision point**, not only the final episode. Before an attempt only the context exists; after the probe, the probe forces exist; at a retry, the whole failed attempt exists. Each key type has its own index (and, in the planned Rust backend, T22, its own `EpisodicMemory` instance).
 
 | Vector | Built from | Used when |
 |---|---|---|
@@ -237,7 +245,7 @@ Each group is standardized with statistics fitted on the committed calibration f
 
 ### 5.4 Backend seam
 
-`MemoryBackend` (Protocol): `add`, `check`, `search`, `update`, `vector`, `payload`, `ids`, `save`, `load`, `in`, `len`. `NumpyBackend` is the default (brute force, cosine or Euclidean; fine for thousands of records). `RuVectorBackend` (T22) runs the same calls through the Rust crate via PyO3. Both must return the same top-k, so the backends can differ only in speed; T22 measures insert and search time at 1 000 to 100 000 records. A later approximate backend (`ruvector-core` HNSW) can scale further without touching cognition code, but it needs its own recall tolerance instead of exact parity.
+`MemoryBackend` (Protocol): `add`, `check`, `search`, `update`, `vector`, `payload`, `ids`, `save`, `load`, `in`, `len`. `NumpyBackend` is the default (brute force, cosine or Euclidean; fine for thousands of records). A planned `RuVectorBackend` (T22) runs the same calls through the Rust crate via PyO3. Both must return the same top-k, so the backends can differ only in speed; T22 measures insert and search time at 1 000 to 100 000 records. A later approximate backend (`ruvector-core` HNSW) can scale further without touching cognition code, but it needs its own recall tolerance instead of exact parity.
 
 **As built in T12** (`vfa/memory/backend.py`, `memory_system.py`). `NumpyBackend` stores every cosine vector at unit norm and scores by a left-to-right dot product, as the crate does (the parity rule), filters by payload mapping or callable, and keeps insertion order on ties. `EpisodicMemory` keeps one index per key type; a record joins only the indexes of the keys it has (by convention `key_retry` for failures, `key_probe` once the probe finished). `recall_similar` ranks by the §5.3 score, widening its search window until no farther record can outrank the k-th; `reinforce` moves utility by 0.1 toward 1 or 0, clamped to [0, 1]. `MemorySystem.save` writes episodic and semantic memory to a new version directory, then points `memory.json` at it, so a crash leaves the last complete save; `load` refuses another backend or metric. On the fixture, the nearest other cube by `key_probe` is the same class 0.967 of the time.
 
@@ -253,18 +261,27 @@ Each group is standardized with statistics fitted on the committed calibration f
 | `DELIBERATIVE` (System 2) | `RetrievalPolicy` | attempt start · `PROBE_DONE` · escalation (`SLIP_UNRECOVERED`) · after a failure (`MISS` included: T08 ends the attempt) |
 | `EMERGENCY` | `SafetySupervisor` | any safety violation; overrides both |
 
-Typical attempt (logged to `runs/<id>/handoffs.jsonl` and the console):
+A retry as logged (excerpt of `uv run vfa demo --quick`, cube 1's third attempt after a break at 8 N and a slip at 4.6 N; event lines and θ updates elided with …). The full trace also goes to `runs/<id>/handoffs.jsonl`:
 
 ```
-[S2] attempt 1  trigger=start      key_pre   hits=3 (best sim 0.71)  θ.grip=8.0N
-[S1] APPROACH → DESCEND → PROBE
-[S1] escalate PROBE_DONE  heft=2.9N slope=4000N/m slip=0
-[S2] trigger=probe       key_probe hits=5 (best sim 0.93, success) θ.grip=6.1N close=0.10m/s
-[S1] SQUEEZE → LIFT → HOLD
-[MEM] store ep_0117 success  reinforce ep_0042 +0.1
+[S2] attempt 4 trigger=failure grip=8N close=0.1m/s lift=0.6m/s² grasp=0.5 approach=0.4m/s (default θ; key_retry hits=0, 0.29 ms)
+[S1] REACTIVE after failure
+[S1] APPROACH
+[S1] DESCEND
+[S1] PROBE
+…
+[S1] escalate PROBE_DONE  heft=0.05N peak=1.52N slope=50418N/m slip=1
+[S2] attempt 4 trigger=probe grip=6.05N close=0.1m/s lift=0.6m/s² grasp=0.5 approach=0.4m/s (bisect: grip 6.05 N in [5.08, 7.20] (0 successes, 2 bounds), 0.22 ms)
+[S1] REACTIVE after probe
+[S1] SQUEEZE
+[S1] LIFT
+[S1] HOLD
+[S1] attempt SUCCESS (env)
+[S2] learn attempt 4: SUCCESS
+[MEM] store ep_00004 SUCCESS grip=6.0N; reinforce 2 +
 ```
 
-A failed attempt adds `[S2] trigger=failure key_retry …` and a retry with an adapted θ.
+At the start (and the retry start) System 2 keeps the default θ; the decision that sets the grip is the probe's. Here this cube's own break and slip bounded the window to [5.08, 7.20] N and the bisection chose 6.05 N.
 
 **As built in T14** (`vfa/cognition/cognitive_core.py`). `CognitiveCore.run_attempt` resets the env to show System 2 the cube, decides θ, and calls T08's `run_attempt`, which resets again with the same seed (same cube; a reset costs about 11–12 ms). The failure trigger is the start of the retry. Escalations reach System 2 through the skill's callback between two `env.step` calls; fields that already ran keep their values, and an unchanged θ goes back as `None`. Percepts are observable only: probe and escalation percepts carry an `EpisodeView` of the attempt so far; a retry sees an `ObservedAttempt` (result with SLIP and DROP merged, θ, probe, an `EpisodeView`), never the recorded episode, which holds the hidden class. A safety stop sets `EMERGENCY` until the next attempt. Each step is a line in `handoffs.jsonl` (with `log_path`). The stub policy returns the naive θ at start and keeps the θ in force later.
 
@@ -325,7 +342,7 @@ On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so 
 | `bandit_flat` | `bandit` with one bucket: an online learner of the single best θ (T17a) |
 | `memory_ctx_only` | full retrieval policy, but every key uses context features only — **the force ablation** |
 | `memory_full` | full retrieval policy with force features |
-| `memory_full+residual` | plus the learned residual (T21) |
+| `memory_full+residual` | plus the learned residual (planned, T21) |
 | `memory_no_reinforce` | `memory_full` with utility fixed at 0.5: ranking by similarity only (T18 component ablation) |
 | `memory_no_semantic` | `memory_full` without consolidation or `SkillLibrary`; episodic hits only (T18) |
 | `memory_no_probe` | `memory_full` without the System 2 decision at `PROBE_DONE` (T18) |
@@ -355,12 +372,12 @@ On a retry of the *same* situation, the failed attempt has similarity ≈ 1, so 
 
 ## 10. Mapping to `ruvector-robotics`
 
-Source read: `github.com/ruvnet/ruvector`, `crates/ruvector-robotics/src/cognitive/` (local clone at `~/code/utilities/ruvector`).
+Source read: `github.com/ruvnet/ruvector`, `crates/ruvector-robotics/src/cognitive/` (local clone at `~/code/utilities/ruvector`). `docs/RUVECTOR_MAPPING.md` expands this table type by type, with the semantic differences and the drop-in plan.
 
-| Python (`vfa`) | Rust (`ruvector_robotics::cognitive`) | Notes |
+| Python (`vfa` subpackage; full module paths in `docs/RUVECTOR_MAPPING.md`) | Rust (`ruvector_robotics::cognitive`) | Notes |
 |---|---|---|
 | `memory.WorkingMemory` | `memory_system::WorkingMemory`, `MemoryItem` | same rule: evict the least-important item when full |
-| `memory.EpisodicMemory` | `memory_system::EpisodicMemory`, `Episode { percepts, actions, reward, timestamp }` | Rust `recall_similar` flattens `percepts` and uses a **raw dot product** → we store one unit-norm key as the single percept. One instance per key type. Rust `Episode` has no id/success: θ JSON + record id go in `actions`, signed outcome in `reward`, payloads in a Python side table |
+| `memory.EpisodicMemory` | `memory_system::EpisodicMemory`, `Episode { percepts, actions, reward, timestamp }` | Rust `recall_similar` flattens `percepts` and uses a **raw dot product** → the planned Rust backend (T22) stores one unit-norm key as the single percept. One instance per key type. Rust `Episode` has no id/success: θ JSON + record id go in `actions`, signed outcome in `reward`, payloads in a Python side table |
 | `memory.SemanticMemory` | `memory_system::SemanticMemory` | name → embedding; `find_similar` is also dot product |
 | `memory.SkillLibrary`, `Skill`, `Demonstration` | `skill_learning::{SkillLibrary, Skill, Demonstration}` | same averaging (summed in demo order, then divided) and `confidence = 1 − 1/(n+1)`; `improve_skill` clamps to [0, 1] but rejects non-finite feedback (Rust stores NaN for NaN and clamps ±inf); names must be non-empty strings and timestamps integers. Rust `Skill.trajectory` is `Vec<[f64; 3]>`; in the Rust backend (T22) θ lives in a side table. `consolidate` is ours |
 | `cognition.CognitiveCore`, `CognitiveMode`, `CognitiveState` | `cognitive_core::{CognitiveCore, CognitiveMode::{Reactive, Deliberative, Emergency}, CognitiveState}` | same modes, states, attention threshold, and `learn` rule. Rust `think()` picks the most confident percept; ours asks the System 2 policy (`RetrievalPolicy` from T15) about the newest. Rust's mode is fixed in its config; ours follows the triggers |
@@ -369,29 +386,29 @@ Source read: `github.com/ruvnet/ruvector`, `crates/ruvector-robotics/src/cogniti
 | `experiments.bandit.ThompsonGripBandit`, `BetaParams` | `ruvector-domain-expansion` `transfer::{MetaThompsonEngine, BetaParams}` | one domain with uniform priors; `select_arm` and `record_outcome` as in the crate, but a tie goes to a random tied arm (the crate: the first); a `ContextBucket` becomes a pair of probe bins, an `ArmId` an arm index. **Sampler deviation:** the crate's `BetaParams::sample` is not a Beta draw (a one-term normal approximation, or a power-law formula when α ≤ 1 or β ≤ 1, which the Beta(1, 1) prior hits); ours is numpy's exact `Generator.beta`. Transfer priors and cost EMAs are not ported |
 | `memory.backend.MemoryBackend` | — (adapter seam) | `NumpyBackend` now; `RuVectorBackend` in T22 |
 
-**Drop-in path (T22).** A small maturin + PyO3 crate (`rust/ruvector_vfa_py/`) depends on `ruvector-robotics` by git and exposes `EpisodicMemory`, `SemanticMemory`, `SkillLibrary`, and `CognitiveCore`. `RuVectorBackend` implements `MemoryBackend` on top of it. A parity test proves both backends return the same top-k on unit-norm vectors.
+**Drop-in path (planned, T22; not built).** T22 plans a small maturin + PyO3 crate (`rust/ruvector_vfa_py/`) that depends on `ruvector-robotics` by git and exposes `EpisodicMemory`, `SemanticMemory`, `SkillLibrary`, and `CognitiveCore`. `RuVectorBackend` implements `MemoryBackend` on top of it. A parity test proves both backends return the same top-k on unit-norm vectors.
 
 **Candidate extensions** (crate modules not used yet): `behavior_tree` (skill phases as a tree), `decision_engine` (utility-based θ selection), `world_model`, `perception::scene_graph`, and `bridge::indexing` (spatial index).
 
 ---
 
-## 11. Package layout (target)
+## 11. Package layout (as built; planned files marked)
 
 ```
 src/vfa/
   cli.py                  # `vfa` entry point (demo, benchmark, scene-check)
-  sim/                    # scene.py (MjSpec), objects.py, sensors.py, recorder.py, env.py
+  sim/                    # scene.py (MjSpec), scene_check.py, objects.py, sensors.py, recorder.py, env.py
   control/                # osc.py, gripper.py, throughput.py (T03 timing CLI), safety.py
-  skills/                 # params.py, pick.py, place.py (T19), reflexes.py, residual.py (T21)
-  memory/                 # embeddings.py, backend.py, memory_system.py, skill_learning.py, ruvector_backend.py (T22)
+  skills/                 # params.py, pick.py, place.py (T19), reflexes.py; residual.py (planned, T21)
+  memory/                 # embeddings.py, backend.py, memory_system.py, skill_learning.py; ruvector_backend.py (planned, T22)
   cognition/              # cognitive_core.py, system2.py, retry.py
-  experiments/            # baselines.py, benchmark.py, demo.py, run_all.py, train_residual.py
+  experiments/            # baselines.py, bandit.py, benchmark.py, demo.py, run_all.py; train_residual.py (planned, T21)
   viz/                    # force_plot.py, plots.py, video.py, report.py
 assets/menagerie/franka_emika_panda/   # vendored, pristine, Apache-2.0
-configs/                  # objects.toml, benchmark.toml, best_fixed.toml, benchmark.sha256, embedding_stats.npz,
+configs/                  # objects.toml, benchmark.toml, best_fixed.toml, benchmark.sha256, embedding_stats.npz, bandit.toml (T17a),
                           # benchmark_pick_place.toml + .sha256, embedding_stats_place.npz (T19)
-scripts/                  # spike_grip.py (T05), record_episode.py and size_slip_detector.py (T06), sweep_place.py (T19)
-rust/ruvector_vfa_py/     # T22
+scripts/                  # spike_grip.py (T05), record_episode.py and size_slip_detector.py (T06), make_fixtures.py and probe_classes.py (T10), sweep_place.py (T19)
+rust/ruvector_vfa_py/     # planned, T22
 tests/                    # fixtures/calib_episodes.npz (committed, ≤ 5 MB)
 docs/                     # BRIEF, ARCHITECTURE, FEASIBILITY, RESULTS, RUVECTOR_MAPPING, EXTENDING
 runs/                     # git-ignored artifacts

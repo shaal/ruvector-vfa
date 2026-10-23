@@ -164,3 +164,16 @@ def test_calibration_fixture_layout():
     assert not ((f["condition"] == "random_retry") & (f["attempt"] == 1)).any()
     # Probe features exist wherever the probe finished (every fixture attempt did).
     assert not np.isnan(f["probe"][:, list(f["probe_columns"]).index("heft_peak")]).any()
+
+
+def test_freeze_help_writes_nothing(tmp_path, monkeypatch, capsys):
+    """``freeze --help`` prints the help and exits before it writes a hash."""
+    monkeypatch.setattr(B, "HASH_PATH", tmp_path / "benchmark.sha256")
+    monkeypatch.setattr(B, "PICK_PLACE_HASH", tmp_path / "benchmark_pick_place.sha256")
+    for argv in (["freeze", "--help"], ["freeze", "--task", "pick_place", "--help"]):
+        with pytest.raises(SystemExit):
+            B.main(argv)
+    assert "re-freeze" in capsys.readouterr().out
+    assert not list(tmp_path.iterdir())
+    assert B.main(["freeze", "--task", "pick_place"]) == 0
+    assert B.PICK_PLACE_HASH.read_text().strip() == B.benchmark_hash(B.PICK_PLACE_FILES)
