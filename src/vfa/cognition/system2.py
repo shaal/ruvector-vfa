@@ -63,6 +63,12 @@ their similarity, result, and grip); the handoff log keeps it (T17's plots).
 With ``keys="context"`` (``memory_ctx_only``, the force ablation) every key is
 the context key ``key_pre``.
 
+**Pick-and-place** (T19). A ``PLACE_BREAK`` counts as a ``BREAK`` everywhere
+above: the cube broke at the set-down because its grip was close to its break
+force (the touchdown raised the finger force past it). The place fields keep
+the policy's ``theta`` values (the defaults); the pick-and-place keys add the
+place-phase forces (``PlaceEmbedder``, passed as ``embedder``).
+
 **Component ablations** (T18; constructor flags, each on by default):
 ``reinforce=False`` never reinforces, so every utility stays 0.5 and ranking is
 by similarity alone; ``semantic=False`` never consolidates and never asks the
@@ -134,6 +140,10 @@ CONSOLIDATE_EVERY = 10  # situations between skill consolidations
 POST_PROBE = ("grip_force", "close_speed", "lift_accel")
 GRIP_LOW, GRIP_HIGH = (float(v) for v in BOUNDS["grip_force"])
 KEY_MODES = ("full", "context")
+# A pick-and-place PLACE_BREAK bounds the grip like a BREAK (T19: the cubes that broke
+# at the set-down were squeezed 0.03-0.22 N below their break force; the touchdown raised
+# the finger force past it).
+BREAKS = ("BREAK", "PLACE_BREAK")
 NO_RECORDER = "System 2 builds its keys from the recording: make the env with record=True"
 
 
@@ -169,6 +179,10 @@ def _under(f: Evidence) -> bool:
     return f.result == UNDERGRIP_RESULT or f.result in ("SLIP", "DROP")
 
 
+def _broke(f: Evidence) -> bool:
+    return f.result in BREAKS
+
+
 def grip_window(
     failures: Sequence[Evidence],
     low: float = GRIP_LOW,
@@ -188,7 +202,7 @@ def grip_window(
         lo, hi, tight = slip[0], broke[0], True  # the margins overlap: the failed grips
     low, high = lo, hi
     for f in failures[own:]:
-        if not _under(f) and f.result != "BREAK":
+        if not _under(f) and not _broke(f):
             continue
         bound = f.grip * (1.0 + MARGIN if _under(f) else 1.0 - MARGIN)
         if low < bound < high:
@@ -210,9 +224,9 @@ def _own_facts(
     for f in mine:
         if _under(f):
             facts.append(("slip", f.grip, f.id))
-        elif f.result == "BREAK":
+        elif _broke(f):
             facts.append(("break", f.grip, f.id))
-        if f.chosen is not None and f.chosen < f.grip and (_under(f) or f.result == "BREAK"):
+        if f.chosen is not None and f.chosen < f.grip and (_under(f) or _broke(f)):
             facts.append(("slip", f.chosen, f.id))
     slip: tuple[float, str | None] = (GRIP_LOW, None)
     broke: tuple[float, str | None] = (GRIP_HIGH, None)

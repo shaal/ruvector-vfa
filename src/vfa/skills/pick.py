@@ -214,6 +214,10 @@ class GraspLiftSkill:
     (``stop_reason``: ``MISS``, ``DROP``, or ``HOLD_EXPIRED``).
     """
 
+    task = "lift"  # the env task the skill drives
+    # θ fields that have run when a SLIP_UNRECOVERED escalation fires (in LIFT or HOLD).
+    slip_ran: tuple[str, ...] = ("grasp_depth", "approach_speed", "lift_accel")
+
     def __init__(self) -> None:
         self.phase = "IDLE"
         self.theta: SkillParams | None = None
@@ -233,7 +237,7 @@ class GraspLiftSkill:
     ) -> None:
         if not isinstance(theta, SkillParams):
             raise TypeError(f"theta must be a SkillParams, got {type(theta).__name__}")
-        validate_env(env)
+        self.validate(env)
         if self._program is not None:
             self._program.close()
         self._env = env
@@ -275,6 +279,14 @@ class GraspLiftSkill:
             self._program.close()
             self._program = None
         self.done = True
+
+    def validate(self, env: Any) -> None:
+        """Raise unless ``env`` is a ``PandaVFAEnv`` this skill can drive."""
+        validate_env(env, self.task)
+
+    def label(self, env: E.PandaVFAEnv) -> str:
+        """Ground-truth label for an attempt the skill ended on its own (scoring only)."""
+        return _label(env, self.stop_reason)
 
     # ------------------------------------------------------------- program
 
@@ -389,6 +401,10 @@ class GraspLiftSkill:
         top = base + (0.0, 0.0, LIFT_M)
         if (yield from self._move(base, top, lift_duration(theta.lift_accel), self._carry)):
             return False
+        return (yield from self._after_lift(grasp, top))
+
+    def _after_lift(self, grasp: np.ndarray, top: np.ndarray) -> Actions:
+        """HOLD at ``top`` until the env reports success (``grasp``: the grasp pose)."""
         self._enter("HOLD")
         if (yield from self._hold(top, HOLD_S, self._carry)):
             return False
@@ -422,7 +438,7 @@ class GraspLiftSkill:
             new = self._escalate(
                 SLIP_UNRECOVERED,
                 info={"grip": old},
-                ran=("grasp_depth", "approach_speed", "lift_accel"),
+                ran=self.slip_ran,
             )
             if new is not None:
                 self._env.close_speed = new.close_speed
@@ -534,12 +550,12 @@ class GraspLiftSkill:
 # ----------------------------------------------------------- run an attempt
 
 
-def validate_env(env: Any) -> None:
-    """Raise unless ``env`` is a ``PandaVFAEnv`` the skill can drive."""
+def validate_env(env: Any, task: str = "lift") -> None:
+    """Raise unless ``env`` is a ``PandaVFAEnv`` a skill for ``task`` can drive."""
     if not isinstance(env, E.PandaVFAEnv):
         raise TypeError(f"expected a PandaVFAEnv (env.unwrapped), got {type(env).__name__}")
-    if env.task != "lift" or env.control != "osc":
-        raise ValueError("the skill drives the lift task with control='osc'")
+    if env.task != task or env.control != "osc":
+        raise ValueError(f"the skill drives the {task} task with control='osc'")
     if env.ticks_per_step != 1:
         raise ValueError("the skill runs at control rate: make the env with step_hz=500")
     if env.auto_carry:
@@ -564,7 +580,7 @@ def run_attempt(
     ``options`` before, which gives the same cube.
     """
     unwrapped = env.unwrapped
-    validate_env(unwrapped)
+    skill.validate(unwrapped)
     wall0 = time.perf_counter()
     obs, info = env.reset(seed=seed, options=options)
     skill.begin(unwrapped, theta, on_escalation)
@@ -581,7 +597,7 @@ def run_attempt(
     if ended:
         result = unwrapped.result
     else:
-        unwrapped.end_episode(_label(unwrapped, skill.stop_reason))
+        unwrapped.end_episode(skill.label(unwrapped))
         result = unwrapped.result  # a safety stop reported meanwhile outranks the label
     logger.info("[S1] attempt %s (%s)", result, skill.stop_reason or "env")
     return AttemptResult(

@@ -44,13 +44,25 @@ a privileged column, the hidden properties, or an event's ``info``.
   ``DROP`` events.
 - ``trajectory`` (64): the ee path relative to the observed cube (16 × 3) and
   its speed (16), from the first motion to the end.
-- ``failure`` (4): one-hot BREAK, under-grip (SLIP or DROP), MISS, other.
+- ``failure`` (4): one-hot BREAK (with T19's PLACE_BREAK), under-grip (SLIP or
+  DROP), MISS, other.
   SLIP and DROP merge because ``run_attempt`` labels an expired hold SLIP or
   DROP by the cube's true height.
 - ``outcome`` (10): one-hot SUCCESS, BREAK, under-grip, MISS, other, and θ
   scaled to its bounds.
 
 ``force_features`` is ``force_wrist`` + ``force_pad`` + ``force_moments`` (262).
+
+**Pick-and-place** (T19, ``PlaceEmbedder``): one more group, ``force_place``
+(96): the wrist Fz and ‖Fxy‖ in TRANSPORT, PLACE_DESCEND, and CONTACT, 16
+points each (a phase the attempt never reached is missing; CONTACT is missing
+when the fingers opened above the table). It joins ``key_retry`` and
+``full_embedding`` (``PLACE_KEYS``), so a failed place's neighbours share its
+carry and its set-down; ``key_pre`` and ``key_probe`` are the lift's, because
+the probe runs before the place. Its statistics live in their own file
+(``configs/embedding_stats_place.npz``, fitted on the pick-and-place
+calibration seeds' episodes by ``python -m vfa.memory.embeddings fit-place``);
+the lift's ``Embedder``, its groups, and its statistics are unchanged.
 
 **Scaling.** Each feature is standardized with the mean and standard deviation
 fitted on the calibration fixture (``configs/embedding_stats.npz``, written by
@@ -94,6 +106,7 @@ from vfa.skills.params import FIELDS, HIGH, LOW
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 STATS_PATH = REPO_ROOT / "configs" / "embedding_stats.npz"
+PLACE_STATS_PATH = REPO_ROOT / "configs" / "embedding_stats_place.npz"
 FIXTURE_PATH = REPO_ROOT / "tests" / "fixtures" / "calib_episodes.npz"
 VIEW_HZ = 50.0  # view rows per second, as the fixture stores them
 SAMPLES = 16  # resampled points per signal and phase
@@ -143,6 +156,14 @@ WEIGHTS: dict[str, float] = {
     "outcome": 1.0,
 }
 GROUPS: tuple[str, ...] = tuple(DIMS)
+PLACE_PHASES: tuple[str, ...] = ("TRANSPORT", "PLACE_DESCEND", "CONTACT")
+PLACE_GROUP = "force_place"
+PLACE_DIMS = 2 * len(PLACE_PHASES) * SAMPLES
+PLACE_WEIGHT = 1.0
+PLACE_KEYS: dict[str, tuple[str, ...]] = {
+    "key_retry": (*KEYS["key_retry"], PLACE_GROUP),
+    "full_embedding": (*KEYS["full_embedding"], PLACE_GROUP),
+}
 MIN_STD = 1e-6
 Z_CLIP = 5.0
 
@@ -401,6 +422,11 @@ def force_groups(view: EpisodeView) -> dict[str, np.ndarray]:
     }
 
 
+def place_features(view: EpisodeView) -> np.ndarray:
+    """Raw ``force_place`` group (96): Fz and ‖Fxy‖ of each ``PLACE_PHASES`` phase."""
+    return np.concatenate([_wrist(view, p, torque=False) for p in PLACE_PHASES])
+
+
 def _as_view(source: Any) -> EpisodeView:
     return source if isinstance(source, EpisodeView) else EpisodeView.from_episode(source)
 
@@ -427,6 +453,8 @@ def trajectory_features(episode: Any) -> np.ndarray:
 def _bucket(result: str | None) -> str | None:
     if result is None:
         return None
+    if result == "PLACE_BREAK":  # pick-and-place (T19): a break at the set-down
+        return "BREAK"
     if result in ("SUCCESS", "BREAK", "MISS"):
         return result
     return "UNDERGRIP" if result in UNDERGRIP else "OTHER"
@@ -556,6 +584,76 @@ class Embedder:
         return self.key("full_embedding", raw_groups(view))
 
 
+@dataclass(frozen=True, slots=True)
+class PlaceStats:
+    """Per-feature mean and standard deviation of the ``force_place`` group."""
+
+    mean: np.ndarray
+    std: np.ndarray
+
+    @classmethod
+    def fit(cls, views: Sequence[EpisodeView]) -> PlaceStats:
+        x = np.stack([place_features(v) for v in views])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # an all-missing feature
+            m, s = np.nanmean(x, axis=0), np.nanstd(x, axis=0)
+        return cls(np.nan_to_num(m, nan=0.0), np.where(np.isfinite(s) & (s > MIN_STD), s, 1.0))
+
+    def save(self, path: str | Path = PLACE_STATS_PATH) -> Path:
+        path = Path(path)
+        np.savez(path, mean=self.mean, std=self.std)
+        return path
+
+    @classmethod
+    def load(cls, path: str | Path = PLACE_STATS_PATH) -> PlaceStats:
+        with np.load(path, allow_pickle=False) as f:
+            mean, std = f["mean"], f["std"]
+        if mean.shape != (PLACE_DIMS,) or std.shape != (PLACE_DIMS,):
+            raise ValueError(f"{path}: force_place must have {PLACE_DIMS} features")
+        return cls(mean, std)
+
+
+class PlaceEmbedder(Embedder):
+    """The pick-and-place keys: the lift's, with ``force_place`` in ``key_retry`` and
+    ``full_embedding`` (refer to the module doc)."""
+
+    def __init__(
+        self,
+        stats: EmbeddingStats | None = None,
+        weights: Mapping[str, float] | None = None,
+        place_stats: PlaceStats | None = None,
+    ) -> None:
+        super().__init__(stats, weights)
+        self.place_stats = place_stats if place_stats is not None else PlaceStats.load()
+        self.weights.setdefault(PLACE_GROUP, PLACE_WEIGHT)
+
+    def scaled(self, group: str, raw: np.ndarray) -> np.ndarray:
+        if group != PLACE_GROUP:
+            return super().scaled(group, raw)
+        raw = np.asarray(raw, dtype=float)
+        if raw.shape != (PLACE_DIMS,):
+            raise ValueError(f"{group}: expected {PLACE_DIMS} features, got {raw.shape}")
+        z = (raw - self.place_stats.mean) / self.place_stats.std
+        z = np.clip(np.where(np.isfinite(z), z, 0.0), -Z_CLIP, Z_CLIP)
+        return z * (self.weights[group] / math.sqrt(PLACE_DIMS))
+
+    def key(self, name: str, groups: Mapping[str, np.ndarray]) -> np.ndarray:
+        names = PLACE_KEYS.get(name, KEYS[name])
+        return _unit(np.concatenate([self.scaled(g, groups[g]) for g in names]))
+
+    def key_retry(self, previous: EpisodeView) -> np.ndarray:
+        groups = {
+            "context": previous.context,
+            **force_groups(previous),
+            "failure": failure_features(previous),
+            PLACE_GROUP: place_features(previous),
+        }
+        return self.key("key_retry", groups)
+
+    def full_embedding(self, view: EpisodeView) -> np.ndarray:
+        return self.key("full_embedding", {**raw_groups(view), PLACE_GROUP: place_features(view)})
+
+
 def key_dims(name: str) -> int:
     return sum(DIMS[g] for g in KEYS[name])
 
@@ -582,13 +680,27 @@ def fixture_views(fixture: Mapping[str, np.ndarray]) -> list[EpisodeView]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="fit configs/embedding_stats.npz on the fixture")
-    parser.add_argument("command", choices=["fit"])
+    parser = argparse.ArgumentParser(
+        description="fit configs/embedding_stats.npz on the fixture (fit), or "
+        "configs/embedding_stats_place.npz on saved pick-and-place episodes (fit-place)"
+    )
+    parser.add_argument("command", choices=["fit", "fit-place"])
     parser.add_argument("--fixture", type=Path, default=FIXTURE_PATH)
-    parser.add_argument("--out", type=Path, default=STATS_PATH)
+    parser.add_argument("--episodes", type=Path, help="fit-place: a directory of saved episodes")
+    parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args(argv)
+    if args.command == "fit-place":
+        from vfa.sim.recorder import load_episode  # the sim package only for this command
+
+        if args.episodes is None:
+            parser.error("fit-place needs --episodes")
+        paths = sorted(args.episodes.rglob("*.npz"))
+        views = [EpisodeView.from_episode(load_episode(p)) for p in paths]
+        path = PlaceStats.fit(views).save(args.out or PLACE_STATS_PATH)
+        print(f"wrote {path} from {len(views)} episodes")
+        return 0
     views = fixture_views(load_fixture(args.fixture))
-    path = EmbeddingStats.fit(views).save(args.out)
+    path = EmbeddingStats.fit(views).save(args.out or STATS_PATH)
     print(f"wrote {path} from {len(views)} fixture episodes")
     return 0
 

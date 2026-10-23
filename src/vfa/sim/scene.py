@@ -448,6 +448,38 @@ def finger_cube_forces(
     return left, right
 
 
+def table_cube_force(
+    model: mujoco.MjModel, data: mujoco.MjData, ids: SceneIds | None = None
+) -> float:
+    """Summed contact normal force [N] between the table and the cube (T19's impact
+    rule; read as ``finger_cube_forces`` reads the fingers')."""
+    ids = ids if ids is not None else scene_ids(model)
+    n = data.ncon
+    if n == 0:
+        return 0.0
+    geom = data.contact.geom[:n]
+    cube, table = ids.cube_geom, ids.table_geom
+    hits = np.flatnonzero(
+        ((geom[:, 0] == cube) & (geom[:, 1] == table))
+        | ((geom[:, 1] == cube) & (geom[:, 0] == table))
+    )
+    if hits.size == 0:
+        return 0.0
+    adr = data.contact.efc_address[:n][hits]
+    if model.opt.cone == mujoco.mjtCone.mjCONE_ELLIPTIC:
+        normal = np.where(adr >= 0, data.efc_force[np.maximum(adr, 0)], 0.0)
+    else:
+        normal = np.zeros(hits.size)
+        wrench = np.zeros(6)
+        for k, i in enumerate(hits):
+            mujoco.mj_contactForce(model, data, int(i), wrench)
+            normal[k] = wrench[0]
+    total = 0.0
+    for force in normal.tolist():
+        total += force
+    return total
+
+
 # ------------------------------------------------------------- per-episode hooks
 
 

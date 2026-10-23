@@ -57,6 +57,7 @@ RESULTS: tuple[str, ...] = (
     "SAFETY_STOP",
     "PLACE_BREAK",
     "TOPPLE",
+    "PLACE_MISS",
 )
 
 _F8 = np.dtype(np.float64)

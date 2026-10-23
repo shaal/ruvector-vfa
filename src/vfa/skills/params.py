@@ -17,6 +17,13 @@
   sampled softness), with a probe peak of at most 3.45 N summed.
 - ``approach_speed`` [m/s]: the peak target speed of the approach and the descent.
 
+Pick-and-place (T19, ``vfa.skills.place``) adds two fields, ``PLACE_FIELDS``:
+
+- ``place_speed`` [m/s]: the constant ee target speed of the last part of the
+  descent onto the table, until the wrist sees the table take the load.
+- ``release_height`` [m]: how far above the table the cube's bottom is when the
+  fingers open; 0 places it on the table (the descent ends at the unload).
+
 ``BOUNDS`` fit the lift task's 10 s limit with the 1.5 s hold included: at the
 slowest corner tested (all speeds and accelerations at their lower bounds, the
 largest grip, the deepest grasp) on the farthest, smallest, heaviest cube
@@ -27,8 +34,13 @@ top of the gripper's 0.001–0.5 m/s range (slower ramps take too long). The
 defaults are plausible values inside the bounds, not tuned ones (T10 defines
 the baselines).
 
+The lift never reads the place fields. ``FIELDS``, ``LOW``, and ``HIGH`` stay
+the five lift fields, so the lift's vectors (embeddings, ``random_retry``'s
+draws) are those of T08; ``PLACE_LOW`` / ``PLACE_HIGH`` bound the place fields.
 ``to_vector`` / ``from_vector`` use ``FIELDS`` order. ``to_dict`` / ``to_json``
-and ``from_dict`` / ``from_json`` give the JSON form (the recorder's ``params``).
+and ``from_dict`` / ``from_json`` give the JSON form (the recorder's ``params``);
+``from_dict`` needs every lift field and takes the place fields if given (a lift
+θ from before T19, such as ``configs/best_fixed.toml``, gets their defaults).
 Every constructor checks that each value is a finite number inside its bounds.
 
 RuVector mapping: the Rust ``skill_learning::Skill`` stores only a trajectory, a
@@ -55,12 +67,16 @@ FIELDS: tuple[str, ...] = (
     "grasp_depth",
     "approach_speed",
 )
+PLACE_FIELDS: tuple[str, ...] = ("place_speed", "release_height")
+ALL_FIELDS: tuple[str, ...] = FIELDS + PLACE_FIELDS
 BOUNDS: dict[str, tuple[float, float]] = {
     "grip_force": (0.5, 25.0),  # N per finger
     "close_speed": (0.05, 0.5),  # m/s
     "lift_accel": (0.3, 3.0),  # m/s²
     "grasp_depth": (0.4, 0.5),  # fraction of the cube height below its top face
     "approach_speed": (0.35, 0.5),  # m/s
+    "place_speed": (0.02, 0.1),  # m/s
+    "release_height": (0.0, 0.015),  # m
 }
 UNITS: dict[str, str] = {
     "grip_force": "N",
@@ -68,9 +84,13 @@ UNITS: dict[str, str] = {
     "lift_accel": "m/s²",
     "grasp_depth": "",
     "approach_speed": "m/s",
+    "place_speed": "m/s",
+    "release_height": "m",
 }
 LOW = np.array([BOUNDS[f][0] for f in FIELDS])
 HIGH = np.array([BOUNDS[f][1] for f in FIELDS])
+PLACE_LOW = np.array([BOUNDS[f][0] for f in PLACE_FIELDS])
+PLACE_HIGH = np.array([BOUNDS[f][1] for f in PLACE_FIELDS])
 
 
 @dataclass(slots=True, frozen=True)
@@ -82,9 +102,11 @@ class SkillParams:
     lift_accel: float = 0.6
     grasp_depth: float = 0.5
     approach_speed: float = 0.4
+    place_speed: float = 0.05
+    release_height: float = 0.0
 
     def __post_init__(self) -> None:
-        for name in FIELDS:
+        for name in ALL_FIELDS:
             value = getattr(self, name)
             if isinstance(value, bool | np.bool_) or not isinstance(value, numbers.Real):
                 raise TypeError(f"{name} must be a real number, got {value!r}")
@@ -119,14 +141,15 @@ class SkillParams:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> SkillParams:
-        """θ from a mapping with exactly the ``FIELDS`` keys (no defaults, no extras)."""
+        """θ from a mapping with every ``FIELDS`` key and any ``PLACE_FIELDS`` keys
+        (the place fields default; no other keys)."""
         if not isinstance(data, Mapping):
             raise TypeError(f"expected a mapping, got {type(data).__name__}")
         keys = set(data)
-        if keys != set(FIELDS):
-            missing, extra = sorted(set(FIELDS) - keys), sorted(keys - set(FIELDS))
+        missing, extra = sorted(set(FIELDS) - keys), sorted(keys - set(ALL_FIELDS))
+        if missing or extra:
             raise ValueError(f"SkillParams keys: missing {missing}, unknown {extra}")
-        return cls(**{f: data[f] for f in FIELDS})
+        return cls(**{f: data[f] for f in ALL_FIELDS if f in keys})
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), allow_nan=False)
@@ -135,11 +158,12 @@ class SkillParams:
     def from_json(cls, text: str) -> SkillParams:
         return cls.from_dict(json.loads(text))
 
-    def describe(self) -> str:
-        """A short log form, e.g. ``grip=8.0N close=0.10m/s ...``."""
+    def describe(self, place: bool = False) -> str:
+        """A short log form, e.g. ``grip=8.0N close=0.10m/s ...`` (``place``: with the
+        place fields)."""
         short = {"grip_force": "grip", "close_speed": "close", "lift_accel": "lift"}
         parts = []
-        for f in fields(self):
+        for f in fields(self)[: len(ALL_FIELDS) if place else len(FIELDS)]:
             name = short.get(f.name, f.name.split("_")[0])
             parts.append(f"{name}={getattr(self, f.name):.3g}{UNITS[f.name]}")
         return " ".join(parts)

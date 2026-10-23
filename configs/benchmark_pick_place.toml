@@ -1,0 +1,30 @@
+# Pick-and-place benchmark (T19, ARCHITECTURE §9). Loaded by
+# vfa.experiments.benchmark --task pick_place.
+#
+# configs/benchmark_pick_place.sha256 hashes this file with configs/objects.toml
+# (the same hidden classes as the lift benchmark); tests/test_pick_place.py fails
+# if either changes. The frozen lift benchmark (configs/benchmark.toml) is
+# untouched. Situations, paired reset seeds, and policies' opaque keys work as in
+# the lift benchmark; the task is pick_place (vfa.skills.place.PickPlaceSkill).
+# The seeds differ from every lift benchmark seed and were fixed before any run.
+
+[benchmark]
+task = "pick_place"
+max_attempts = 5          # every condition gets the same retry budget
+noise = "realistic"       # as the lift benchmark
+calib_seeds = [10, 11]    # the force_place embedding statistics
+
+# quick: the T19 comparison (memory_full vs random_retry).
+[profiles.quick]
+seeds = [600, 601]
+situations = 60
+
+[profiles.calib]
+seeds = [10, 11]
+situations = 60
+
+# heldout: one fresh seed, scored once after the quick runs (memory's PLACE_BREAK
+# rule changed after the first quick run, docs/RESULTS.md §10.3).
+[profiles.heldout]
+seeds = [700]
+situations = 60
