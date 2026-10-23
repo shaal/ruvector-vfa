@@ -22,3 +22,9 @@ situations = 60
 [profiles.calib]
 seeds = [10, 11]
 situations = 60
+
+# heldout: one fresh seed, scored once after the quick runs (memory's PLACE_BREAK
+# rule changed after the first quick run, docs/RESULTS.md §10.3).
+[profiles.heldout]
+seeds = [700]
+situations = 60

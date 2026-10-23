@@ -229,7 +229,7 @@ def test_the_pick_place_benchmark_matches_its_hash() -> None:
     expected = B.PICK_PLACE_HASH.read_text().strip()
     assert B.benchmark_hash(B.PICK_PLACE_FILES) == expected
     config = B.load_pick_place_config()
-    assert config.task == "pick_place" and set(config.profiles) == {"quick", "calib"}
+    assert config.task == "pick_place" and set(config.profiles) == {"quick", "calib", "heldout"}
     lift = B.load_benchmark_config()
     lift_seeds = {s for p in lift.profiles.values() for s in p.seeds}
     assert not lift_seeds & {s for p in config.profiles.values() for s in p.seeds}
@@ -288,6 +288,28 @@ def test_torque_mode_lowering_in_the_air_after_a_load_spike_is_no_set_down() -> 
     t.move(cube + (0.0, 0.0, 0.013), 0.02).wait(0.3)
     assert not env._cube_contacts() & 1  # in the air
     assert env.phase == "CARRY"
+
+
+def test_the_set_down_reference_needs_a_held_level() -> None:
+    """A spike on the first carry tick cannot become the reference: it needs a level the
+    load held for SETDOWN_WINDOW_S, and a younger carry has none (no set-down)."""
+    env = E.PandaVFAEnv("pick_place", control="torque", step_hz=500)
+    env.reset(seed=0)
+    env._start_carry(0.0)
+    full = round(E.SETDOWN_WINDOW_S / env.dt)
+    loads = [9.75] + [7.08] * 200
+    for k, load in enumerate(loads, 1):
+        env._track_carry_load(load)
+        if k < full:
+            assert env._carry_load == 0.0
+    assert env._carry_load == 7.08
+
+
+def test_pick_place_out_option_takes_both_forms(tmp_path, capsys) -> None:
+    for form in (["--out", str(tmp_path / "a")], [f"--out={tmp_path / 'b'}"]):
+        assert B.main(["aggregate", "--task", "pick_place", "--partial", *form]) == 0
+    assert (tmp_path / "a" / "quick" / "metrics.json").exists()
+    assert (tmp_path / "b" / "quick" / "metrics.json").exists()
 
 
 # ------------------------------------------------------------ acceptance

@@ -887,12 +887,16 @@ class PandaVFAEnv(gym.Env):
 
     def _track_carry_load(self, load: float) -> None:
         """Raise the carry's reference load to the lowest load of the last
-        ``SETDOWN_WINDOW_S`` (a level the load held that long; refer to SETDOWN_LOAD)."""
+        ``SETDOWN_WINDOW_S`` (a level the load held that long; refer to SETDOWN_LOAD).
+        Until the carry is that old there is no reference (0), so no set-down: an
+        open near the table is still a release."""
         window = self._load_window
         window.append(load)
-        if len(window) > round(SETDOWN_WINDOW_S / self.dt):
+        full = round(SETDOWN_WINDOW_S / self.dt)
+        if len(window) > full:
             window.popleft()
-        self._carry_load = max(self._carry_load, min(window))
+        if len(window) == full:
+            self._carry_load = max(self._carry_load, min(window))
 
     def _next_phase(self) -> str:
         if not self.events.in_grasp:

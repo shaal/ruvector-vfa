@@ -30,10 +30,11 @@ came down within 4 cm of the target, rests flat within 2 cm of it, unbroken,
 the pads clear), ``PLACE_BREAK`` (a break in or after a release phase),
 ``TOPPLE``, or ``DROP`` (the cube left the fingers more than 2 cm up). An
 attempt the skill ends after RETREAT without a verdict is labelled from ground
-truth for scoring only: ``TOPPLE`` if the cube rests on no face, else
-``PLACE_MISS`` (it rests outside the target tolerance, the roadmap's place
-"MISS": a separate label from the probe's ``MISS``, which means no grasp), or
-``DROP`` if it is not on the table. The pick part ends as in the lift
+truth for scoring only: ``DROP`` if the cube is not on the table, ``TOPPLE``
+if it rests on no face, else ``PLACE_MISS`` (the roadmap's place "MISS", a
+separate label from the probe's ``MISS``, which means no grasp): it rests flat
+but the env judged no success, because its touchdown lay outside 4 cm or it
+rests outside 2 cm of the target. The pick part ends as in the lift
 (``MISS``, ``BREAK``, ``DROP``; a ``SLIP`` escalation and the reflex work
 through the transport).
 

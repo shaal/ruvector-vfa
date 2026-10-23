@@ -61,8 +61,8 @@ about 19 N/s in quadrature). ``SLIP`` labels come from ground truth
 
 **Pick-and-place** (T19, ``--task pick_place``): its own config and hash
 (``configs/benchmark_pick_place.toml``, ``benchmark_pick_place.sha256``, with the
-shared ``objects.toml``), the ``quick`` and ``calib`` profiles on seeds no lift
-profile uses, the output root ``runs/benchmark_pick_place``, and the conditions
+shared ``objects.toml``), the ``quick``, ``calib``, and ``heldout`` profiles on
+seeds no lift profile uses, the output root ``runs/benchmark_pick_place``, and the conditions
 ``naive``, ``random_retry`` (which also draws the place fields), and
 ``memory_full`` (``PlaceEmbedder`` keys); other conditions are refused. Its
 metrics add the place-break, topple, and place-miss rates, and its peak force
@@ -241,8 +241,8 @@ def load_pick_place_config(path: str | Path = PICK_PLACE_CONFIG) -> BenchmarkCon
 
 
 def _pick_place_config(data: Mapping[str, Any], where: str) -> BenchmarkConfig:
-    """The pick-and-place benchmark: a quick and a calib profile, no grid; its seeds
-    differ from every seed of the lift benchmark."""
+    """The pick-and-place benchmark: quick, calib, and heldout profiles, no grid; its
+    seeds differ from each other's and from every seed of the lift benchmark."""
     _keys(data, {"benchmark", "profiles"}, where)
     b = data["benchmark"]
     _keys(b, {"task", "max_attempts", "noise", "calib_seeds"}, "[benchmark]")
@@ -257,12 +257,15 @@ def _pick_place_config(data: Mapping[str, Any], where: str) -> BenchmarkConfig:
         if not (isinstance(p["situations"], int) and p["situations"] >= 1):
             raise ValueError(f"[profiles.{name}] situations must be an int >= 1")
         profiles[name] = Profile(_seeds(p["seeds"]), p["situations"])
-    if set(profiles) != {"quick", "calib"}:
-        raise ValueError("the pick_place benchmark has exactly the quick and calib profiles")
+    if set(profiles) != {"quick", "calib", "heldout"}:
+        raise ValueError("the pick_place benchmark has the quick, calib, and heldout profiles")
     if set(profiles["calib"].seeds) != set(calib):
         raise ValueError("the calib profile must use the calibration seeds")
-    if set(profiles["quick"].seeds) & set(calib):
-        raise ValueError("quick and calib seeds must differ")
+    seen: set[int] = set()
+    for prof in profiles.values():
+        if seen & set(prof.seeds):
+            raise ValueError("the pick_place profiles must use different seeds")
+        seen |= set(prof.seeds)
     lift = load_benchmark_config(CONFIG_PATH)
     used = {s for prof in lift.profiles.values() for s in prof.seeds}
     if used & {s for prof in profiles.values() for s in prof.seeds}:
@@ -1100,7 +1103,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     task = task_parser.parse_known_args(argv)[0].task
     pick_place = task == "pick_place"
     config = load_pick_place_config() if pick_place else load_benchmark_config()
-    if pick_place and "--out" not in argv:
+    if pick_place and not any(a == "--out" or a.startswith("--out=") for a in argv):
         argv = [*argv, "--out", str(PICK_PLACE_OUT)]
     if pick_place and command not in ("run", "aggregate", "freeze"):
         raise SystemExit(f"the pick_place benchmark has no {command!r} command")
