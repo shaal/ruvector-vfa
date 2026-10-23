@@ -271,7 +271,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
 
 ## Phase E — Demo, experiments, documentation
 
-- [ ] **T16 — Demo CLI: baseline vs memory, visible improvement across retries**
+- [x] **T16 — Demo CLI: baseline vs memory, visible improvement across retries**
   - Goal: the one command a newcomer runs.
   - Deliverables:
     - `uv run vfa demo [--quick] [--seed N] [--video]` in `vfa/cli.py` + `vfa/experiments/demo.py`:

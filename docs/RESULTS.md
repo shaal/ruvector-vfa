@@ -127,3 +127,15 @@ First-attempt successes per class (20 cubes each, both seeds):
 **Calibration seeds** (`--profile calib`, seeds 0 and 1; not held out: their `naive` and `random_retry` episodes are the fixture that fit the embedding statistics, T13's clustering constants, and the similarity scale behind `SIM_STRONG`): `memory_full` 0.783 on 0–29 and 0.900 on 30–59 (success@1 0.842, success@5 1.000, attempts-to-success 1.19, break rate 0.084); `naive` 0.583 and 0.633 (0.608, 0.617, 2.94, 0.507).
 
 **Sensitivity** (information only; `memory_full` on `quick` with one constant changed, pooled success@1 on 0–29 → 30–59): the setting used, 0.817 → 0.950; `SIM_STRONG` 0.75: 0.817 → 0.950, 0.85: 0.767 → 0.867; `MARGIN` 0.05: 0.800 → 0.950, 0.2: 0.800 → 0.950; `SIGMA0` 0: 0.800 → 0.950, 0.3: 0.817 → 0.950. Every setting stays above `naive`'s 0.700 on 30–59.
+
+## 7. The demo (T16)
+
+`uv run vfa demo --quick`: 30 cubes of benchmark seed 500 (a `quick` tuning seed), up to 5 attempts each, the three conditions on the same cubes and reset seeds. 28 s wall (baselines in background processes, memory in the foreground), exit 0.
+
+| Condition | success@1 | success@1, cubes 15–29 | success@5 | attempts-to-success | break rate |
+|---|---|---|---|---|---|
+| `naive` | 0.600 | 0.600 | 0.600 | 3.00 | 0.577 |
+| `random_retry` | 0.600 | 0.600 | 0.867 | 2.10 | 0.475 |
+| `memory_full` | 0.800 | **0.867** | **1.000** | **1.27** | **0.079** |
+
+The memory ends with 38 attempts and 3 consolidated skills. These are the first 30 situations of the `quick` run of §6 on one seed, so they repeat part of that in-sample result.
