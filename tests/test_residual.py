@@ -124,6 +124,31 @@ def test_squeeze_waits_for_the_grip_under_the_slowest_step() -> None:
     assert result.result == "SUCCESS" and result.sim_s < E.TIME_LIMIT_S["lift"]
 
 
+@pytest.mark.slow
+def test_the_squeeze_budget_keeps_the_slowest_corner_in_time() -> None:
+    """At the slowest θ corner and the step floor the squeeze cannot reach 25 N in time:
+    SQUEEZE stops where the lift and the hold still fit, and the attempt ends inside the
+    time limit."""
+    floor = np.zeros((2, len(R.FEATURES)))
+    floor[0, :3] = -50.0
+    slow = SkillParams(
+        grip_force=25.0, close_speed=0.05, lift_accel=0.3, grasp_depth=0.4, approach_speed=0.35
+    )
+    env = B.make_env(B.load_benchmark_config())
+    result = run_attempt(
+        env,
+        GraspLiftSkill(R.ResidualPolicy(floor)),
+        slow,
+        seed=0,
+        options={"object_class": "heavy_rigid"},
+    )
+    lift = [h["t"] for h in result.episode.params_history]  # θ is set once: no raise here
+    assert result.sim_s < E.TIME_LIMIT_S["lift"] and result.result != "TIMEOUT", (
+        result.result,
+        lift,
+    )
+
+
 def test_the_vertical_output_moves_the_hold() -> None:
     up = np.zeros((2, len(R.FEATURES)))
     up[1, 1:3] = 50.0  # LIFT and HOLD: +VZ_MAX
@@ -206,6 +231,12 @@ def test_training_resumes_by_generation(tmp_path, monkeypatch) -> None:
     assert gens == [0, 1, 2, 3, 4]
     with pytest.raises(SystemExit):
         T.train(tmp_path, 4, 2, 1, deadline=1e9)  # other settings: refused
+    monkeypatch.setattr(T, "replay_set", lambda *a: {0: pool[1:], 1: pool[:3]})
+    with pytest.raises(SystemExit):
+        T.train(tmp_path, 4, 4, 1, deadline=1e9)  # another replay: refused
+    np.savez(tmp_path / "state.npz", center=np.zeros(14), generation=1)  # from before the key
+    with pytest.raises(SystemExit):
+        T.train(tmp_path, 4, 4, 1, deadline=1e9)
 
 
 # ------------------------------------------------------------- benchmark
@@ -217,7 +248,7 @@ def test_the_residual_condition_carries_its_weights(monkeypatch, tmp_path) -> No
     assert all(j.key["residual"] == R.ResidualPolicy.load().to_dict() for j in jobs)
     assert "residual" not in B.plan_condition(config, "memory_full", "quick")[0].key
     monkeypatch.setattr(R, "RESIDUAL_PATH", tmp_path / "missing.npz")
-    with pytest.raises(ValueError):
+    with pytest.raises(FileNotFoundError):
         B.plan_condition(config, "memory_full+residual", "quick")
     with pytest.raises(ValueError):
         B.plan_condition(B.load_pick_place_config(), "memory_full+residual", "quick")

@@ -165,7 +165,9 @@ def summary(rows: np.ndarray) -> dict[str, float | None]:
 
 
 def fingerprint(episodes: dict[int, list[dict]], batch: int) -> str:
-    """What a resumed run must share with the saved one: the replay and the settings."""
+    """What a resumed run must share with the saved one: the replay, the settings, and
+    the code that runs an attempt (``benchmark.code_fingerprint``: the skill, the
+    residual, the env)."""
     import hashlib
 
     settings = {"pairs": PAIRS, "sigma": SIGMA, "lr": LR, "batch": batch, "lambda": LAMBDA}
@@ -175,6 +177,7 @@ def fingerprint(episodes: dict[int, list[dict]], batch: int) -> str:
         "e0": E0,
         "stream": STREAM,
         "dim": ResidualPolicy().to_vector().size,
+        "code": B.code_fingerprint(),
     }
     doc = json.dumps({"settings": settings, "replay": episodes}, sort_keys=True)
     return hashlib.sha256(doc.encode()).hexdigest()
@@ -231,7 +234,7 @@ def train(out: Path, generations: int, batch: int, workers: int, deadline: float
     key = fingerprint(episodes, batch)
     if state_path.exists():
         with np.load(state_path) as s:
-            if str(s["fingerprint"]) != key:
+            if "fingerprint" not in s.files or str(s["fingerprint"]) != key:
                 raise SystemExit(
                     f"{out} holds a run with another replay or settings: use a new --out"
                 )
@@ -252,7 +255,9 @@ def train(out: Path, generations: int, batch: int, workers: int, deadline: float
         if not curve:  # generation 0: the untrained center
             curve.append({"generation": 0, **summary(evaluate(pool, [center], valid)[0])})
             _save(out, center, adam, gen, curve, key)
-        while gen < generations and time.perf_counter() - t0 < deadline:
+        last = 0.0  # the last generation's wall time: the next one must fit the deadline
+        while gen < generations and time.perf_counter() - t0 + last < deadline:
+            started = time.perf_counter()
             rng = np.random.default_rng((STREAM, gen))
             eps = rng.standard_normal((PAIRS, dim))
             pick = rng.choice(len(train_pool), size=min(batch, len(train_pool)), replace=False)
@@ -271,6 +276,7 @@ def train(out: Path, generations: int, batch: int, workers: int, deadline: float
                 }
             )
             _save(out, center, adam, gen, curve, key)
+            last = time.perf_counter() - started
             c = curve[-1]
             print(
                 f"generation {gen}: validation reward {c['reward']:.4f} success {c['success']:.3f} "
@@ -343,6 +349,8 @@ def _plot(curve: list[dict], path: Path) -> None:
     ax2.plot(gens, [c["success"] for c in curve], color="#1a7f37", label="success")
     axes[1].set_ylabel("force jerk [N/s]")
     ax2.set_ylabel("success")
+    lines = axes[1].get_lines() + ax2.get_lines()
+    axes[1].legend(lines, [ln.get_label() for ln in lines], frameon=False, loc="center right")
     fig.suptitle("Residual ES on the calibration replay (validation set: calib seed 1)")
     fig.tight_layout()
     fig.savefig(path, dpi=120)

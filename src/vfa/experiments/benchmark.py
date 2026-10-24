@@ -677,7 +677,7 @@ def plan_condition(
         from vfa.skills.residual import RESIDUAL_PATH, ResidualPolicy
 
         if not RESIDUAL_PATH.exists():
-            raise ValueError(f"{condition} needs {RESIDUAL_PATH} (train_residual --install)")
+            raise FileNotFoundError(f"{condition} needs {RESIDUAL_PATH} (train_residual --install)")
         extra["residual"] = ResidualPolicy.load().to_dict()
     jobs = []
     for seed in seeds:
@@ -1144,7 +1144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.out,
                 None if args.save_episodes is None else str(Path(args.save_episodes).resolve()),
             )
-        except ValueError as exc:
+        except (ValueError, FileNotFoundError) as exc:
             raise SystemExit(str(exc)) from exc
         if args.save_episodes is not None:
             skipped = sum(_chunk_done(Path(j.path), j.key) for j in jobs)
@@ -1181,7 +1181,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise SystemExit(f"--profile must be one of {sorted(config.profiles)}")
         try:
             result = aggregate(config, args.profile, args.out, args.partial)
-        except (FileNotFoundError, ValueError) as exc:  # ValueError: a condition's inputs
+        except FileNotFoundError as exc:
             print(exc, file=sys.stderr)
             return 3
         for name, c in result["conditions"].items():

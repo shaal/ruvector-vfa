@@ -357,7 +357,7 @@ On the fresh seed too, `memory_full` needs fewer attempts than `random_retry` (1
 
 ### 11.2 Where the jerk comes from (probe)
 
-`scripts/probe_residual.py` replays the 143 attempts of the training replay set (memory's grasps on the calibration seeds, each with the θ that ran), changing only the grip command:
+`scripts/probe_residual.py` replays the 143 attempts of the replay set (72 training and 71 validation episodes: memory's grasps on the calibration seeds, each with the θ that ran), changing only the grip command:
 
 | variant | success | force jerk [N/s] | jerk² from SQUEEZE | jerk² from LIFT |
 |---|---|---|---|---|
@@ -368,13 +368,13 @@ On the fresh seed too, `memory_full` needs fewer attempts than `random_retry` (1
 | every rise limited to 10 N/s (SQUEEZE, LIFT, HOLD) | 0.909 | 22.6 | 273 | 244 |
 | every rise limited to 5 N/s | 0.692 | 20.2 | 166 | 244 |
 
-The jerk comes about equally from SQUEEZE (the squeeze ramp) and LIFT (where the grip rises through the slip reflex and escalations, besides the sensor noise). A constant offset per phase does little; limiting how fast the grip rises does most. So the residual's grip output is a per-tick step limit on the grip command (ARCHITECTURE §6), which the spec's inputs (F/T, slip signal, phase) can steer.
+The jerk comes about equally from SQUEEZE (the squeeze ramp) and LIFT (where the grip rises through the slip reflex and escalations, besides the sensor noise). The one constant offset tried (2 N less in SQUEEZE) does little; limiting how fast the grip rises does most. So the residual's grip output is a per-tick step limit on the grip command (ARCHITECTURE §6), which the spec's inputs (F/T, slip signal, phase) can steer.
 
 ### 11.3 Training
 
 ![Residual ES training curve](figures/t21_residual_curve.png)
 
-Over 30 generations the center's validation reward rose from 0.6252 to 0.6991 (calib seed 1, 71 episodes), its force jerk fell from 28.5 to 21.1 N/s, and its success stayed at 0.930. The smoothed curve (running mean of 5) rose at every generation from generation 2 on and was still rising at generation 30; generation 1 lies 0.000003 below generation 0. **By the rule fixed before training (non-decreasing at every generation) the acceptance item "improves monotonically (smoothed)" is not met**, by that one step. The learned grip step is slow in SQUEEZE (bias −2.87: about 7 N/s per finger), close to the default ramp in LIFT and HOLD, and slower when the slip signal rises (weight −1.51).
+Over 30 generations the center's validation reward rose from 0.6252 to 0.6991 (calib seed 1, 71 episodes), its force jerk fell from 28.5 to 21.1 N/s, and its success stayed at 0.930. The smoothed curve (running mean of 5) rose at every generation from generation 2 on and was still rising at generation 30; at generation 1 it lies 0.0000016 below generation 0 (the raw reward 0.000003). **By the rule fixed before training (non-decreasing at every generation) the acceptance item "improves monotonically (smoothed)" is not met**, by that one step. The learned grip step is slow in SQUEEZE (bias −2.87: about 7 N/s per finger), close to the default ramp in LIFT and HOLD, and slower when the slip signal rises (weight −1.51).
 
 ### 11.4 Quick comparison (three scorings, two after bug fixes)
 
@@ -386,7 +386,7 @@ Over 30 generations the center's validation reward rose from 0.6252 to 0.6991 (c
 The installed residual meets the rule on quick: 25.2 % lower mean jerk, success@1 0.017 lower. That was quick's third scoring. Two reviewer-found bugs were fixed after the earlier ones, each followed by a retrain with the same settings:
 
 1. Run 1 read the wrist wrench in the wrong order (its "Fz" was Fx). It scored 31.8 ± 1.1 N/s (12.6 % lower) at success@1 0.867.
-2. Run 2, with the wrench fixed, scored 36.9 ± 8.4 N/s (1.4 % higher) at success@1 0.883. Its SQUEEZE ended on the gripper's own ramp time, so under a slow residual 46 of 131 replayed lifts started short of θ's grip; the fix makes SQUEEZE wait for the grip.
+2. Run 2, with the wrench fixed, scored 36.9 ± 8.4 N/s (1.4 % higher) at success@1 0.883. Its SQUEEZE ended on the gripper's own ramp time, so under a slow residual 46 of 131 replayed lifts started short of θ's grip. The fix makes SQUEEZE wait for the grip within the time the lift and the hold still need; with the installed residual 7 of the 131 still start LIFT short (at 91–99 % of grips of 22–23.5 N, where that time runs out), and all 7 succeed.
 
 Because quick had been looked at three times, the rule was fixed again for one scoring on the evaluation seeds (§11.1).
 
@@ -401,9 +401,9 @@ Because quick had been looked at three times, the rule was fixed again for one s
 
 ### 11.6 Why the mean misses
 
-The mean over successful attempts is set by a few attempts at 100 N/s and more: slip rescues, where the cube slid at the grip memory chose at the probe, the slip reflex raised the grip in steps, an escalation raised it again, and the cube stick-slipped in the grip (traced in run 1 on a `brittle` retry: chosen grip 1.9 N, reflex raises to 2.37 and 2.96 N, escalation to 4.62 N, pad-force swings of about ±1000 N/s in LIFT). On the evaluation seeds both conditions have 23 attempts above 100 N/s; the residual has more of them among its successes (15 against 11) because 4 of its tails are rescues that `memory_full` lost (3 slips, 1 drop). Three properties of the design keep the residual from reaching the target:
+The mean over successful attempts is set by a few attempts at 100 N/s and more: slip rescues, where the cube slid at the grip memory chose at the probe, the slip reflex raised the grip in steps, an escalation raised it again, and the cube stick-slipped in the grip (an illustrative trace from run 1 on a `brittle` retry: chosen grip 1.9 N, reflex raises to 2.37 and 2.96 N, escalation to 4.62 N, pad-force swings of about ±1000 N/s in LIFT). On the evaluation seeds both conditions have 23 attempts above 100 N/s, and the residual has more of them among its successes (15 against 11). Matched by attempt: 4 of the residual's tails are rescues `memory_full` lost (3 slips, 1 drop) and 2 of `memory_full`'s are rescues the residual lost; 3 of the residual's tails are attempts `memory_full` finished below 100 N/s along a different reflex or escalation path, and 1 goes the other way. Three properties of the design keep the residual from reaching the target:
 
-- **The metric counts a lost rescue as an improvement.** Jerk is averaged over successful attempts only, so a rescue that succeeds adds a tail and a rescue that fails removes one.
+- **The metric counts a lost rescue as an improvement.** Jerk is averaged over successful attempts only, so a rescue that succeeds adds a tail and a rescue that fails removes one; that asymmetry accounts for about half of the 15 against 11.
 - **The residual cannot rescue faster.** Its grip output only limits how fast the command rises toward System 1's; it never exceeds System 1's command or the gripper's own rate. It learned to slow rises when the slip signal rises (weight −1.51).
 - **The replay holds few rescues.** It replays each attempt with the θ that ran at the end, which already holds the reflex and escalation raises, and it runs no System 2: replayed, those grasps succeed at 0.916 against 0.839 in the original run, so the slips that make the tails are mostly absent from training.
 
