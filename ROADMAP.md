@@ -385,7 +385,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
 
 ## Phase F — Stretch: residual learning and the real RuVector backend
 
-- [ ] **T21 — Residual System 1 policy (numpy evolution strategies)**
+- [x] **T21 — Residual System 1 policy (numpy evolution strategies)**
   - Goal: the "simple RL / residual learning" layer from the brief — learn a small correction on top of the impedance controller.
   - Deliverables:
     - `vfa/skills/residual.py`: a linear residual policy that maps tared F/T features, slip signal, and phase one-hot to Δgrip-force and Δz-velocity during `SQUEEZE`, `LIFT`, and `HOLD`. Bounded output. Off by default.
@@ -397,6 +397,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - Verify: `uv run python -m vfa.experiments.train_residual --quick --workers 8` (≤ 9 min; full training is chunked and resumable by ES generation), then the benchmark quick profile for both conditions.
   - Budget: ~60 min.
   - depends: T20
+  - Outcome (2026-10-23, owner's decision): shipped as a negative result. The residual lowers the median force jerk 24 % at no success cost, but the mean-jerk target was missed on the evaluation seeds (−5.4 %) and the smoothed training curve dips once (generation 1, by 0.0000016). No follow-up task: docs/RESULTS.md §11.5–11.6 explain why the target is out of reach for this design.
 
 - [ ] **T22 — Real RuVector backend: PyO3 binding over `ruvector-robotics`**
   - Goal: prove the drop-in hooks — run the same memory through the actual Rust crate.

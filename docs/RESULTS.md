@@ -346,3 +346,65 @@ On the fresh seed too, `memory_full` needs fewer attempts than `random_retry` (1
 **The lift results did not change.** After every T19 change, the lift `quick` profile was re-run for `naive`, `best_fixed`, `random_retry`, `memory_full`, and `bandit`. All 1,143 attempts matched the run before T19: the result, every lift θ field, the probe features, the peak force, the jerk, and the sim time.
 
 **Two env limits from T07 are fixed** (`tests/test_pick_place.py`). A `heavy_rigid` cube that grazed the table 8 cm short of the target and was dragged there, still pinched, used to end without success on seeds 0–2: the touchdown stayed at the graze, seed 1 reached `TIMEOUT`, and seeds 0 and 2 had no verdict when the script ended. Now all three end in `SUCCESS`. In torque mode, a fast lift start slipped a `heavy_slippery` cube in the grip, and its held load spiked to 1.38 times the static load. A 5 mm lowering in the air then gave `PLACE`, with the cube 5.3 mm above the table. Now the carry stays `CARRY`: the reference is a load level held for 0.1 s. Under the realistic sensor noise, a two-tick dip 5 % below that level still set 3 of 10 `light_rigid` carries down with the cube about 1.5 cm above the table, so the load must also fall 4σ of the estimate's noise below the line. With that margin no carry set down in the air (0 of 20 `light_rigid` and `fragile_soft` carries). Real set-downs at 4 mm/s under noise still placed: 15 of 15 reached `PLACE` and `SUCCESS` (`light_rigid`, `fragile_soft`, `heavy_rigid`).
+
+## 11. Residual System 1 policy (T21)
+
+### 11.1 Protocol (fixed before the quick run)
+
+- **Training** (`uv run python -m vfa.experiments.train_residual --workers 8`, re-run until done; `--install` copies the weights to `configs/residual.npz`): numpy OpenAI-style ES on the calibration seeds only. The replay set is `memory_full`'s attempts on the `calib` profile (seed 0: 72 training episodes; seed 1: 71 validation episodes), each replayed with the θ that ran. 8 antithetic pairs per generation, σ 0.5, Adam step 0.1, 16 training episodes per generation (the same for every candidate), 30 generations. Reward per episode: success − 0.25 · jerk / 30 N/s − 0.05 · max(excess, 0) / 10 N. All of these, and the training curve's smoothing (a running mean over 5 generations of the validation reward of the center), were fixed before the first training run.
+- **Comparison** (quick profile, seeds 500 and 501; fixed before the first quick scoring, and quick was then scored three times, §11.4): `memory_full+residual` meets the target if its force jerk (mean over seeds) is at least 20 % lower than `memory_full`'s and its success@1 is at most 0.03 lower.
+- **Confirmation** (added after the third quick scoring, §11.4, and pushed before this run): the same rule on the `full` profile (the evaluation seeds 1000–1002, which no residual run has seen), scored once with the installed weights.
+
+### 11.2 Where the jerk comes from (probe)
+
+`scripts/probe_residual.py` replays the 143 attempts of the replay set (72 training and 71 validation episodes: memory's grasps on the calibration seeds, each with the θ that ran), changing only the grip command:
+
+| variant | success | force jerk [N/s] | jerk² from SQUEEZE | jerk² from LIFT |
+|---|---|---|---|---|
+| none | 0.916 | 29.6 | 580 | 549 |
+| 2 N less in SQUEEZE (a constant offset) | 0.909 | 27.6 | 475 | 301 |
+| SQUEEZE ramp limited to 10 N/s | 0.916 | 24.7 | 273 | 575 |
+| closing speed 0.05 m/s (θ, half the ramp rate) | 0.909 | 23.2 | 329 | 217 |
+| every rise limited to 10 N/s (SQUEEZE, LIFT, HOLD) | 0.909 | 22.6 | 273 | 244 |
+| every rise limited to 5 N/s | 0.692 | 20.2 | 166 | 244 |
+
+The jerk comes about equally from SQUEEZE (the squeeze ramp) and LIFT (where the grip rises through the slip reflex and escalations, besides the sensor noise). The one constant offset tried (2 N less in SQUEEZE) does little; limiting how fast the grip rises does most. So the residual's grip output is a per-tick step limit on the grip command (ARCHITECTURE §6), which the spec's inputs (F/T, slip signal, phase) can steer.
+
+### 11.3 Training
+
+![Residual ES training curve](figures/t21_residual_curve.png)
+
+Over 30 generations the center's validation reward rose from 0.6252 to 0.6991 (calib seed 1, 71 episodes), its force jerk fell from 28.5 to 21.1 N/s, and its success stayed at 0.930. The smoothed curve (running mean of 5) rose at every generation from generation 2 on and was still rising at generation 30; at generation 1 it lies 0.0000016 below generation 0 (the raw reward 0.000003). **By the rule fixed before training (non-decreasing at every generation) the acceptance item "improves monotonically (smoothed)" is not met**, by that one step. The learned grip step is slow in SQUEEZE (bias −2.87: about 7 N/s per finger), close to the default ramp in LIFT and HOLD, and slower when the slip signal rises (weight −1.51).
+
+### 11.4 Quick comparison (three scorings, two after bug fixes)
+
+| condition (quick, seeds 500 and 501) | success@1 | success@1, 21–60 | attempts-to-success | force jerk [N/s] | median jerk [N/s] |
+|---|---|---|---|---|---|
+| `memory_full` | 0.883 ± 0.024 | 0.938 ± 0.018 | 1.133 ± 0.047 | 36.4 ± 5.6 | 28.5 |
+| `memory_full+residual`, run 3 (installed) | 0.867 ± 0.024 | 0.925 ± 0.035 | 1.150 ± 0.047 | 27.2 ± 6.2 | 21.4 |
+
+The installed residual meets the rule on quick: 25.2 % lower mean jerk, success@1 0.017 lower. That was quick's third scoring. Two reviewer-found bugs were fixed after the earlier ones, each followed by a retrain with the same settings:
+
+1. Run 1 read the wrist wrench in the wrong order (its "Fz" was Fx). It scored 31.8 ± 1.1 N/s (12.6 % lower) at success@1 0.867.
+2. Run 2, with the wrench fixed, scored 36.9 ± 8.4 N/s (1.4 % higher) at success@1 0.883. Its SQUEEZE ended on the gripper's own ramp time, so under a slow residual 46 of 131 replayed lifts started short of θ's grip. The fix makes SQUEEZE wait for the grip within the time the lift and the hold still need; with the installed residual 7 of the 131 still start LIFT short (at 91–99 % of grips of 22–23.5 N, where that time runs out), and all 7 succeed.
+
+Because quick had been looked at three times, the rule was fixed again for one scoring on the evaluation seeds (§11.1).
+
+### 11.5 Confirmation on the evaluation seeds: target missed
+
+| condition (full, seeds 1000–1002) | success@1 | success@1, 21–60 | attempts-to-success | force jerk [N/s] | median jerk [N/s] | successes > 100 N/s |
+|---|---|---|---|---|---|---|
+| `memory_full` | 0.856 ± 0.019 | 0.925 ± 0.000 | 1.189 ± 0.069 | 36.7 ± 1.7 | 28.0 | 11 |
+| `memory_full+residual` | 0.872 ± 0.019 | 0.925 ± 0.000 | 1.161 ± 0.051 | 34.8 ± 8.0 | 21.2 | 15 |
+
+**Target missed:** the mean force jerk is 5.4 % lower, not 20 % (per seed: 25.9 against 34.9, 37.1 against 37.2, 41.3 against 38.2 N/s); success@1 is 0.017 higher. The quick result did not replicate. What does replicate is the typical attempt: the median jerk over successful attempts falls 24 % (28.0 to 21.2 N/s) and every class's median falls (`brittle` 27.2 to 21.0, `heavy_rigid` 28.1 to 21.3, `light_rigid` 27.8 to 21.1, `slippery` 33.4 to 21.7, `heavy_slippery` 37.1 to 23.2; `fragile_soft` stays at the noise floor, 19.6 and 19.2), as on quick.
+
+### 11.6 Why the mean misses
+
+The mean over successful attempts is set by a few attempts at 100 N/s and more: slip rescues, where the cube slid at the grip memory chose at the probe, the slip reflex raised the grip in steps, an escalation raised it again, and the cube stick-slipped in the grip (an illustrative trace from run 1 on a `brittle` retry: chosen grip 1.9 N, reflex raises to 2.37 and 2.96 N, escalation to 4.62 N, pad-force swings of about ±1000 N/s in LIFT). On the evaluation seeds both conditions have 23 attempts above 100 N/s, and the residual has more of them among its successes (15 against 11). Matched by attempt: 4 of the residual's tails are rescues `memory_full` lost (3 slips, 1 drop) and 2 of `memory_full`'s are rescues the residual lost; 3 of the residual's tails are attempts `memory_full` finished below 100 N/s along a different reflex or escalation path, and 1 goes the other way. Three properties of the design keep the residual from reaching the target:
+
+- **The metric counts a lost rescue as an improvement.** Jerk is averaged over successful attempts only, so a rescue that succeeds adds a tail and a rescue that fails removes one; that asymmetry accounts for about half of the 15 against 11.
+- **The residual cannot rescue faster.** Its grip output only limits how fast the command rises toward System 1's; it never exceeds System 1's command or the gripper's own rate. It learned to slow rises when the slip signal rises (weight −1.51).
+- **The replay holds few rescues.** It replays each attempt with the θ that ran at the end, which already holds the reflex and escalation raises, and it runs no System 2: replayed, those grasps succeed at 0.916 against 0.839 in the original run, so the slips that make the tails are mostly absent from training.
+
+**Outcome (owner's decision, 2026-10-23):** T21 ships as a negative result. The residual is built, trained, and available as `memory_full+residual`; it lowers the typical attempt's force jerk by about a quarter at no success cost; the pre-registered mean-jerk target and the strict monotonic-curve rule are not met. No follow-up task is planned: a residual that only limits how fast the grip rises cannot lower a success-only mean that slip-rescue tails dominate.

@@ -95,6 +95,8 @@ from vfa.sim.recorder import Episode
 from vfa.sim.sensors import read_privileged
 from vfa.skills.params import SkillParams
 from vfa.skills.reflexes import SlipReflex
+from vfa.skills.residual import PHASES as RESIDUAL_PHASES
+from vfa.skills.residual import ResidualPolicy, ResidualState, features
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +119,7 @@ SET_DOWN_S = 0.4  # minimum-jerk return to the grasp height
 SET_DOWN_SETTLE_S = 0.2
 SQUEEZE_SETTLE_S = 0.15  # T05: hold after the motor reaches the force
 SQUEEZE_MARGIN_S = 0.5
+RESIDUAL_MARGIN_S = 0.5  # with a residual, SQUEEZE leaves this much of the time limit spare
 RAMP_N_PER_S_PER_MPS = 250.0  # the gripper ramps the squeeze at 250·speed N/s per finger
 GRIP_TOLERANCE = 0.01  # a squeeze is reached within 1 % of the request
 LIFT_M = 0.12  # the env's success line is 10 cm; 2 cm cover payload sag and creep
@@ -218,7 +221,10 @@ class GraspLiftSkill:
     # θ fields that have run when a SLIP_UNRECOVERED escalation fires (in LIFT or HOLD).
     slip_ran: tuple[str, ...] = ("grasp_depth", "approach_speed", "lift_accel")
 
-    def __init__(self) -> None:
+    def __init__(self, residual: ResidualPolicy | None = None) -> None:
+        if residual is not None and not isinstance(residual, ResidualPolicy):
+            raise TypeError(f"residual must be a ResidualPolicy or None, got {residual!r}")
+        self.residual = residual  # T21: a learned correction in SQUEEZE, LIFT, HOLD; off: None
         self.phase = "IDLE"
         self.theta: SkillParams | None = None
         self.probe: ProbeFeatures | None = None
@@ -256,6 +262,7 @@ class GraspLiftSkill:
         self._info: dict[str, Any] = {}
         self._new: set[str] = set()
         self._phase_seen: set[str] = set()  # events since the phase began
+        self._residual_state = ResidualState()
         self._program = self._run()
 
     def act(self, obs: Mapping[str, np.ndarray], info: Mapping[str, Any]) -> np.ndarray | None:
@@ -387,7 +394,13 @@ class GraspLiftSkill:
         ramp /= RAMP_N_PER_S_PER_MPS * theta.close_speed
         settle = round(SQUEEZE_SETTLE_S / self._dt)
         reached = None
-        for k in range(round((ramp + SQUEEZE_MARGIN_S) / self._dt)):
+        ticks = round((ramp + SQUEEZE_MARGIN_S) / self._dt)
+        if self.residual is not None:
+            # The residual may rise slower than the gripper's ramp: wait for θ's grip,
+            # within the time the lift and the hold still need (T21).
+            left = env.time_limit - self._time() - lift_duration(theta.lift_accel) - HOLD_S
+            ticks = max(ticks, round((left - RESIDUAL_MARGIN_S) / self._dt))
+        for k in range(ticks):
             yield self._action(hold)
             if reached is None and _near(env.gripper.actuator_squeeze(), self._grip):
                 reached = k
@@ -513,6 +526,8 @@ class GraspLiftSkill:
 
     def _action(self, pos: np.ndarray) -> np.ndarray:
         """The env action that moves the ee target to ``pos`` this tick, with the grip."""
+        if self.residual is not None and self._grip > 0.0 and self.phase in RESIDUAL_PHASES:
+            return self._residual_action(pos)
         env = self._env
         pos = np.clip(pos, E.TARGET_LOW, E.TARGET_HIGH)
         a = np.empty(4)
@@ -520,6 +535,32 @@ class GraspLiftSkill:
         norm = float(np.linalg.norm(delta))
         a[:3] = delta / norm if norm > 1.0 else delta
         a[3] = self._grip / E.GRIP_FORCE_MAX if self._grip > 0.0 else -1.0
+        return a
+
+    def _residual_action(self, pos: np.ndarray) -> np.ndarray:
+        """``_action`` with the T21 residual: the grip command rises toward ``self._grip``
+        by the residual's step, and in LIFT and HOLD the target gets its vertical offset
+        (refer to ``vfa.skills.residual``). θ and its record stay System 1's."""
+        env, state = self._env, self._residual_state
+        slip = env.sensors.slip
+        x = features(
+            self.phase,
+            self._obs["wrench"],
+            float(self._obs["load"][0]),
+            slip.load,
+            slip.peak,
+            slip.watching,
+        )
+        step, vz = self.residual.outputs(x)
+        grip = state.grip(self._grip, step, env.gripper.actuator_squeeze())
+        if self.phase != "SQUEEZE":
+            pos = pos + (0.0, 0.0, state.move(vz, self._dt))
+        pos = np.clip(pos, E.TARGET_LOW, E.TARGET_HIGH)
+        a = np.empty(4)
+        delta = (pos - self._obs["ee_target"]) / env.max_step
+        norm = float(np.linalg.norm(delta))
+        a[:3] = delta / norm if norm > 1.0 else delta
+        a[3] = grip / E.GRIP_FORCE_MAX
         return a
 
     def _move(
