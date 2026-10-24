@@ -318,7 +318,13 @@ def learning_curves(run: Run, out: Path) -> Path:
 
 
 def embedding_map(run: Run, out: Path) -> Path:
-    memory = MemorySystem.load(run.path / "memory")
+    path = run.path / "memory"
+    factory = None
+    if json.loads((path / "memory.json").read_text()).get("backend") == "RuVectorBackend":
+        from vfa.memory.ruvector_backend import RuVectorBackend  # a --backend ruvector demo
+
+        factory = RuVectorBackend
+    memory = MemorySystem.load(path) if factory is None else MemorySystem.load(path, factory)
     index = memory.episodic.indexes["key_probe"]
     by_id = run.by_memory_id()
     ids = [i for i in index.ids if i in by_id]

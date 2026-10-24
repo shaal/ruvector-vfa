@@ -37,7 +37,9 @@ def test_the_banner_names_every_component_and_the_backend():
         "cognitive_core::CognitiveCore",
     ):
         assert rust in text
-    assert "backend: NumpyBackend" in text and "--backend ruvector" in text
+    assert "backend: NumpyBackend" in text
+    assert "--backend ruvector" in demo.BACKEND_NOTES["NumpyBackend"]  # how to switch (T22)
+    assert "PyO3" in demo.BACKEND_NOTES["RuVectorBackend"]
 
 
 def test_halves_and_tables():

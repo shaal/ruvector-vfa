@@ -399,7 +399,7 @@ Phases: **A** simulation foundation · **B** System 1 (env, skill, safety, basel
   - depends: T20
   - Outcome (2026-10-23, owner's decision): shipped as a negative result. The residual lowers the median force jerk 24 % at no success cost, but the mean-jerk target was missed on the evaluation seeds (−5.4 %) and the smoothed training curve dips once (generation 1, by 0.0000016). No follow-up task: docs/RESULTS.md §11.5–11.6 explain why the target is out of reach for this design.
 
-- [ ] **T22 — Real RuVector backend: PyO3 binding over `ruvector-robotics`**
+- [x] **T22 — Real RuVector backend: PyO3 binding over `ruvector-robotics`**
   - Goal: prove the drop-in hooks — run the same memory through the actual Rust crate.
   - Deliverables:
     - `rust/ruvector_vfa_py/`: a maturin + PyO3 crate. It depends on `ruvector-robotics` by git (`github.com/ruvnet/ruvector`, pinned `rev = "3e8429739fc0a3878b553a87bb91e7f66d8c0cbd"`, the latest upstream commit touching `crates/ruvector-robotics` when this plan was written; confirm it with `git ls-remote` or pick a newer one). Expose `EpisodicMemory` (`store`, `recall_similar`), `SemanticMemory` (`store`, `find_similar`), `SkillLibrary` (`learn_from_demonstration`, `improve_skill`), and `CognitiveCore` (mode/state transitions).

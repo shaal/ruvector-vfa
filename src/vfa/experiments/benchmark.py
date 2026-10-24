@@ -37,7 +37,8 @@ an attempt, the condition, its fixed θ, the range); a wall-clock deadline
 chunks it had started) stops submitting chunks, and the same command continues
 the work. ``--workers`` runs chunks in parallel processes (default
 ``min(8, cpu − 2)``). ``aggregate`` reads the chunks and writes
-``runs/benchmark/<profile>/metrics.json``; it refuses a condition with missing
+``runs/benchmark/<profile>/metrics.json`` (``metrics_<backend>.json`` with
+``--backend``, T22); it refuses a condition with missing
 chunks unless ``--partial`` (a learning condition with no chunk file at all is
 left out). A learning condition's run first runs ``naive`` on the same seeds and
 then prints success@1 per half and per block of ``BLOCK`` situations for both.
@@ -126,6 +127,13 @@ PICK_PLACE_FILES: tuple[Path, ...] = (PICK_PLACE_CONFIG, OBJECTS_PATH)
 PICK_PLACE_OUT = REPO_ROOT / "runs" / "benchmark_pick_place"
 PICK_PLACE_CONDITIONS: tuple[str, ...] = ("naive", "random_retry", "memory_full")
 TASKS: tuple[str, ...] = ("lift", "pick_place")
+# Memory backends (T22): "ruvector" runs memory's search through the Rust crate
+# (vfa.memory.ruvector_backend); its chunks sit in a "ruvector" folder under the
+# condition's, and their key carries a hash of the binding's source.
+BACKENDS: tuple[str, ...] = ("numpy", "ruvector")
+BINDING_FILES: tuple[Path, ...] = tuple(
+    REPO_ROOT / "rust" / "ruvector_vfa_py" / f for f in ("Cargo.toml", "Cargo.lock", "src/lib.rs")
+)
 CHUNK = 15  # situations per chunk
 DEFAULT_DEADLINE_S = 400.0  # + the chunks already running (≤ about 100 s each)
 LATE_FROM = 20  # success_at_1_late: situations 21-60 (0-based index >= 20)
@@ -462,6 +470,7 @@ class Job:
     noise: str
     save_episodes: str | None = None
     task: str = "lift"
+    backend: str = "numpy"
 
 
 _WORKER: dict[str, Any] = {}
@@ -538,12 +547,20 @@ def _run_learner(
     if job.condition in BANDIT_CONDITIONS:
         rng = np.random.default_rng((job.seed, BANDIT_STREAM))
         policy = make_policy(job.condition, rng, job.key["bandit"])  # the key's arms and edges
-    elif job.task == "pick_place":
-        from vfa.memory.embeddings import PlaceEmbedder
-
-        policy = RetrievalPolicy(embedder=PlaceEmbedder(), **MEMORY_POLICIES[job.condition])
     else:
-        policy = RetrievalPolicy(**MEMORY_POLICIES.get(job.condition, {}))
+        memory = None
+        if job.backend == "ruvector":
+            from vfa.memory.memory_system import MemorySystem
+            from vfa.memory.ruvector_backend import RuVectorBackend
+
+            memory = MemorySystem(backend_factory=RuVectorBackend)
+        settings = MEMORY_POLICIES.get(job.condition, {})
+        if job.task == "pick_place":
+            from vfa.memory.embeddings import PlaceEmbedder
+
+            policy = RetrievalPolicy(memory, embedder=PlaceEmbedder(), **settings)
+        else:
+            policy = RetrievalPolicy(memory, **settings)
     if job.condition in RESIDUAL_CONDITIONS:
         from vfa.skills.residual import ResidualPolicy
 
@@ -646,9 +663,23 @@ def plan_condition(
     seeds: Sequence[int] | None = None,
     out: Path = DEFAULT_OUT,
     save_episodes: str | None = None,
+    backend: str = "numpy",
+    need_binding: bool = True,
 ) -> list[Job]:
-    """The chunks of one condition on one profile (optionally only some seeds)."""
+    """The chunks of one condition on one profile (optionally only some seeds; ``backend``:
+    the memory conditions' vector store, T22)."""
     out = _out(config, out)
+    if backend not in BACKENDS:
+        raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+    if backend != "numpy":
+        if condition not in MEMORY_CONDITIONS + RESIDUAL_CONDITIONS:
+            raise ValueError(
+                f"--backend {backend} applies to the memory conditions, not {condition!r}"
+            )
+        from vfa.memory.ruvector_backend import rust_module
+
+        if need_binding:  # a run needs it; reading finished chunks does not
+            rust_module()  # fail now, with the build steps, not in a worker
     prof = config.profiles[profile]
     seeds = prof.seeds if seeds is None else tuple(seeds)
     learner = condition in LEARNING_CONDITIONS
@@ -663,6 +694,8 @@ def plan_condition(
     chunk = prof.situations if learner else CHUNK
     code = code_fingerprint()
     extra: dict[str, Any] = {}
+    if backend != "numpy":
+        extra["backend"] = {"name": backend, "binding": benchmark_hash(BINDING_FILES)}
     if condition == FROZEN:
         if WARMUP["seed"] in prof.seeds or WARMUP["seed"] in seeds:
             raise ValueError(
@@ -696,7 +729,11 @@ def plan_condition(
             }
             if config.task != "lift":
                 key["task"] = config.task
-            path = out / profile / condition / f"seed{seed}_{start:03d}-{end:03d}.json"
+
+            folder = out / profile / condition
+            if backend != "numpy":
+                folder = folder / backend  # never the numpy run's files
+            path = folder / f"seed{seed}_{start:03d}-{end:03d}.json"
             jobs.append(
                 Job(
                     condition,
@@ -710,6 +747,7 @@ def plan_condition(
                     config.noise,
                     save_episodes,
                     config.task,
+                    backend,
                 )
             )
     return jobs
@@ -783,9 +821,12 @@ def run_jobs(jobs: Sequence[Job], workers: int, deadline_s: float) -> bool:
 
 def _report(done: tuple[str, int, float], t0: float) -> None:
     path, n, wall = done
+    p = Path(path)
+    name = f"{p.parent.name}/{p.name}"
+    if p.parent.name in BACKENDS:  # a backend's folder: name the condition too
+        name = f"{p.parent.parent.name}/{name}"
     print(
-        f"  {Path(path).parent.name}/{Path(path).name}: {n} attempts in {wall:.0f} s "
-        f"(elapsed {time.perf_counter() - t0:.0f} s)",
+        f"  {name}: {n} attempts in {wall:.0f} s (elapsed {time.perf_counter() - t0:.0f} s)",
         flush=True,
     )
 
@@ -883,6 +924,7 @@ def learning(
     profile: str,
     out: Path = DEFAULT_OUT,
     seeds: Sequence[int] | None = None,
+    backend: str = "numpy",
 ) -> dict[str, Any]:
     """success@1 per half and per block of ``BLOCK`` situations, pooled over the
     seeds (default: the profile's), for ``condition`` and ``naive``; a condition
@@ -891,7 +933,8 @@ def learning(
     half = n // 2
     result: dict[str, Any] = {"situations": n, "conditions": {}, "missing": []}
     for name in dict.fromkeys((condition, "naive")):
-        jobs = plan_condition(config, name, profile, seeds, out=out)
+        store = backend if name == condition else "numpy"
+        jobs = plan_condition(config, name, profile, seeds, out=out, backend=store)
         if not all(_chunk_done(Path(j.path), j.key) for j in jobs):
             result["missing"].append(name)
             continue
@@ -917,8 +960,9 @@ def print_learning(
     profile: str,
     out: Path,
     seeds: Sequence[int] | None = None,
+    backend: str = "numpy",
 ) -> None:
-    report = learning(config, condition, profile, out, seeds)
+    report = learning(config, condition, profile, out, seeds, backend)
     for name in report["missing"]:
         print(f"{name}: chunks missing or stale on this --out; no learning report")
     half = report["situations"] // 2
@@ -944,9 +988,14 @@ def combine(per_seed: Mapping[int, dict]) -> dict[str, Any]:
 
 
 def aggregate(
-    config: BenchmarkConfig, profile: str, out: Path = DEFAULT_OUT, partial: bool = False
+    config: BenchmarkConfig,
+    profile: str,
+    out: Path = DEFAULT_OUT,
+    partial: bool = False,
+    backend: str = "numpy",
 ) -> dict:
-    """Metrics of every condition → ``<profile>/metrics.json``.
+    """Metrics of every condition → ``<profile>/metrics.json`` (``metrics_<backend>.json``
+    for another memory backend; refer to ``metrics_path``).
 
     A condition with missing or stale chunks is listed under ``missing``; unless
     ``partial``, any missing chunk raises ``FileNotFoundError`` before writing.
@@ -968,9 +1017,13 @@ def aggregate(
         "missing": {},
     }
     for condition in PICK_PLACE_CONDITIONS if pick_place else ALL_CONDITIONS:
-        if condition in LEARNING_CONDITIONS and not any((out / profile / condition).glob("*.json")):
+        store = backend if condition in MEMORY_CONDITIONS + RESIDUAL_CONDITIONS else "numpy"
+        folder = out / profile / condition / (store if store != "numpy" else "")
+        if condition in LEARNING_CONDITIONS and not any(folder.glob("*.json")):
             continue  # a learning condition that was never run on this --out
-        jobs = plan_condition(config, condition, profile, out=out)
+        jobs = plan_condition(
+            config, condition, profile, out=out, backend=store, need_binding=False
+        )
         missing = [j.path for j in jobs if not _chunk_done(Path(j.path), j.key)]
         if missing:
             result["missing"][condition] = len(missing)
@@ -983,8 +1036,16 @@ def aggregate(
             f"chunks missing or stale on profile {profile!r}: {result['missing']} "
             "(run the conditions, or pass --partial)"
         )
-    _write_json(out / profile / "metrics.json", result)
+    result["backend"] = backend
+    _write_json(metrics_path(out, profile, backend), result)
     return result
+
+
+def metrics_path(out: Path, profile: str, backend: str = "numpy") -> Path:
+    """Where ``aggregate`` writes: ``metrics.json``, or ``metrics_<backend>.json`` for a
+    memory backend other than numpy (it never replaces the numpy run's file)."""
+    name = "metrics.json" if backend == "numpy" else f"metrics_{backend}.json"
+    return out / profile / name
 
 
 def select_best_fixed(config: BenchmarkConfig, out: Path = DEFAULT_OUT) -> dict[str, Any]:
@@ -1086,6 +1147,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, action="append", help="only these seeds")
     _common(parser)
     parser.add_argument("--save-episodes", default=None, help="save every episode here")
+    parser.add_argument(
+        "--backend",
+        choices=BACKENDS,
+        default="numpy",
+        help="memory's vector store (ruvector: the Rust crate, T22; its chunks go to a "
+        "ruvector folder under the condition's)",
+    )
     return parser
 
 
@@ -1143,8 +1211,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.seed,
                 args.out,
                 None if args.save_episodes is None else str(Path(args.save_episodes).resolve()),
+                args.backend,
             )
-        except (ValueError, FileNotFoundError) as exc:
+        except (ValueError, FileNotFoundError, ImportError) as exc:  # ImportError: no binding
             raise SystemExit(str(exc)) from exc
         if args.save_episodes is not None:
             skipped = sum(_chunk_done(Path(j.path), j.key) for j in jobs)
@@ -1160,7 +1229,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if done:
             by_seed = load_records(jobs)
             if args.condition in LEARNING_CONDITIONS:
-                print_learning(config, args.condition, args.profile, args.out, args.seed)
+                print_learning(
+                    config, args.condition, args.profile, args.out, args.seed, args.backend
+                )
             for seed, records in sorted(by_seed.items()):
                 m = summarize(records, config.max_attempts)
                 print(
@@ -1171,17 +1242,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
         return 0 if done else 3
     if command == "aggregate":
-        parser = argparse.ArgumentParser(description="aggregate chunk files into metrics.json")
+        parser = argparse.ArgumentParser(
+            description="aggregate chunk files into metrics.json (metrics_<backend>.json)"
+        )
         parser.add_argument("--profile", default="quick" if pick_place else "full")
         parser.add_argument("--out", type=Path, default=None, help=OUT_HELP)
         parser.add_argument("--partial", action="store_true", help="allow missing conditions")
+        parser.add_argument("--backend", choices=BACKENDS, default="numpy", help="memory's store")
         _task_option(parser)
         args = parse(parser)
         if args.profile not in config.profiles:
             raise SystemExit(f"--profile must be one of {sorted(config.profiles)}")
         try:
-            result = aggregate(config, args.profile, args.out, args.partial)
-        except FileNotFoundError as exc:
+            result = aggregate(config, args.profile, args.out, args.partial, args.backend)
+        except (FileNotFoundError, ImportError) as exc:
             print(exc, file=sys.stderr)
             return 3
         for name, c in result["conditions"].items():
@@ -1194,7 +1268,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if result["missing"]:
             print(f"missing chunks: {result['missing']}")
-        print(f"wrote {args.out / args.profile / 'metrics.json'}")
+        memory = MEMORY_CONDITIONS + RESIDUAL_CONDITIONS
+        if args.backend != "numpy" and not any(c in memory for c in result["conditions"]):
+            print(f"note: no {args.backend} chunks on this --out; only the baselines are in it")
+        print(f"wrote {metrics_path(args.out, args.profile, args.backend)}")
         return 0
     if command == "freeze":
         parser = argparse.ArgumentParser(

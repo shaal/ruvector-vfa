@@ -1,6 +1,6 @@
 # Architecture — ruvector-vfa
 
-Status: **as built through T21** (T20 brought this file in line with the code). Each section states the design, then "As built in Txx" paragraphs record what the code does and what changed; measured numbers live in `docs/RESULTS.md`. Not built yet: the Rust backend (T22) and T23–T24. Section numbers are referenced from `ROADMAP.md`; keep them stable.
+Status: **as built through T22** (T20 brought this file in line with the code). Each section states the design, then "As built in Txx" paragraphs record what the code does and what changed; measured numbers live in `docs/RESULTS.md`. Not built yet: T23–T24. Section numbers are referenced from `ROADMAP.md`; keep them stable.
 
 ---
 
@@ -46,7 +46,7 @@ The memory and cognition layers mirror the `ruvector-robotics` Rust crate (its `
                          ┌──────────────────────────────────────────────┐
                          │  MemorySystem (memory/)                       │
                          │  Working · Episodic · Semantic (SkillLibrary) │
-                         │  MemoryBackend: NumpyBackend (Rust: T22)      │
+                         │  MemoryBackend: NumpyBackend | RuVectorBackend│
                          └──────────────────────────────────────────────┘
 ```
 
@@ -207,7 +207,7 @@ Every event is logged at INFO on `[S1]` (`SAFETY_STOP` on `[SAFETY]`). Frames mu
 
 ### 5.1 Embeddings and retrieval keys (T11)
 
-The memory stores **what was available at each decision point**, not only the final episode. Before an attempt only the context exists; after the probe, the probe forces exist; at a retry, the whole failed attempt exists. Each key type has its own index (and, in the planned Rust backend, T22, its own `EpisodicMemory` instance).
+The memory stores **what was available at each decision point**, not only the final episode. Before an attempt only the context exists; after the probe, the probe forces exist; at a retry, the whole failed attempt exists. Each key type has its own index (and, in the Rust backend, T22, its own `EpisodicMemory` instance).
 
 | Vector | Built from | Used when |
 |---|---|---|
@@ -245,9 +245,11 @@ Each group is standardized with statistics fitted on the committed calibration f
 
 ### 5.4 Backend seam
 
-`MemoryBackend` (Protocol): `add`, `check`, `search`, `update`, `vector`, `payload`, `ids`, `save`, `load`, `in`, `len`. `NumpyBackend` is the default (brute force, cosine or Euclidean; fine for thousands of records). A planned `RuVectorBackend` (T22) runs the same calls through the Rust crate via PyO3. Both must return the same top-k, so the backends can differ only in speed; T22 measures insert and search time at 1 000 to 100 000 records. A later approximate backend (`ruvector-core` HNSW) can scale further without touching cognition code, but it needs its own recall tolerance instead of exact parity.
+`MemoryBackend` (Protocol): `add`, `check`, `search`, `update`, `vector`, `payload`, `ids`, `save`, `load`, `in`, `len`. `NumpyBackend` is the default (brute force, cosine or Euclidean; fine for thousands of records). `RuVectorBackend` (T22) runs the same calls through the Rust crate via PyO3. Both must return the same top-k, so the backends can differ only in speed; T22 measures insert and search time at 1 000 to 100 000 records. A later approximate backend (`ruvector-core` HNSW) can scale further without touching cognition code, but it needs its own recall tolerance instead of exact parity.
 
 **As built in T12** (`vfa/memory/backend.py`, `memory_system.py`). `NumpyBackend` stores every cosine vector at unit norm and scores by a left-to-right dot product, as the crate does (the parity rule), filters by payload mapping or callable, and keeps insertion order on ties. `EpisodicMemory` keeps one index per key type; a record joins only the indexes of the keys it has (by convention `key_retry` for failures, `key_probe` once the probe finished). `recall_similar` ranks by the §5.3 score, widening its search window until no farther record can outrank the k-th; `reinforce` moves utility by 0.1 toward 1 or 0, clamped to [0, 1]. `MemorySystem.save` writes episodic and semantic memory to a new version directory, then points `memory.json` at it, so a crash leaves the last complete save; `load` refuses another backend or metric. On the fixture, the nearest other cube by `key_probe` is the same class 0.967 of the time.
+
+**As built in T22** (`rust/ruvector_vfa_py`, `vfa/memory/ruvector_backend.py`). The binding exposes the crate's `EpisodicMemory`, `SemanticMemory`, `SkillLibrary`, and `CognitiveCore`. `RuVectorBackend` keeps `NumpyBackend`'s side table (ids, unit vectors, payloads) and ranks in a Rust `EpisodicMemory`: one episode per record, with the key as its percept, the id and θ in `actions`, the signed outcome in `reward`. The crate returns no scores, so the binding recomputes them with the crate's formula. Filters run in Python on the crate's full ranking. Both backends return the same hits and the quick demo is identical. Unfiltered, the crate searches 1.5–2.1 times as fast; filtered, as System 2 always searches, it is 1.4–2.6 times as slow, because the whole ranking crosses PyO3 (RESULTS §12, D23). A release build keeps its symbols: the macOS 27 loader rejects the stripped dylib.
 
 ---
 
@@ -379,16 +381,16 @@ Source read: `github.com/ruvnet/ruvector`, `crates/ruvector-robotics/src/cogniti
 | Python (`vfa` subpackage; full module paths in `docs/RUVECTOR_MAPPING.md`) | Rust (`ruvector_robotics::cognitive`) | Notes |
 |---|---|---|
 | `memory.WorkingMemory` | `memory_system::WorkingMemory`, `MemoryItem` | same rule: evict the least-important item when full |
-| `memory.EpisodicMemory` | `memory_system::EpisodicMemory`, `Episode { percepts, actions, reward, timestamp }` | Rust `recall_similar` flattens `percepts` and uses a **raw dot product** → the planned Rust backend (T22) stores one unit-norm key as the single percept. One instance per key type. Rust `Episode` has no id/success: θ JSON + record id go in `actions`, signed outcome in `reward`, payloads in a Python side table |
+| `memory.EpisodicMemory` | `memory_system::EpisodicMemory`, `Episode { percepts, actions, reward, timestamp }` | Rust `recall_similar` flattens `percepts` and uses a **raw dot product** → the Rust backend (T22) stores one unit-norm key as the single percept. One instance per key type. Rust `Episode` has no id/success: θ JSON + record id go in `actions`, signed outcome in `reward`, payloads in a Python side table |
 | `memory.SemanticMemory` | `memory_system::SemanticMemory` | name → embedding; `find_similar` is also dot product |
 | `memory.SkillLibrary`, `Skill`, `Demonstration` | `skill_learning::{SkillLibrary, Skill, Demonstration}` | same averaging (summed in demo order, then divided) and `confidence = 1 − 1/(n+1)`; `improve_skill` clamps to [0, 1] but rejects non-finite feedback (Rust stores NaN for NaN and clamps ±inf); names must be non-empty strings and timestamps integers. Rust `Skill.trajectory` is `Vec<[f64; 3]>`; in the Rust backend (T22) θ lives in a side table. `consolidate` is ours |
 | `cognition.CognitiveCore`, `CognitiveMode`, `CognitiveState` | `cognitive_core::{CognitiveCore, CognitiveMode::{Reactive, Deliberative, Emergency}, CognitiveState}` | same modes, states, attention threshold, and `learn` rule. Rust `think()` picks the most confident percept; ours asks the System 2 policy (`RetrievalPolicy` from T15) about the newest. Rust's mode is fixed in its config; ours follows the triggers |
 | `cognition.Percept`, `Decision`, `Outcome` | same names | `Outcome { success, reward, description }` with reward +1 / −1. A `Percept` carries a mapping (Rust: `Vec<f64>`), a `Decision` carries θ (Rust: an `ActionCommand`) |
 | `control.SafetySupervisor` | `CognitiveMode::Emergency` (priority 255 in `think`) | |
 | `experiments.bandit.ThompsonGripBandit`, `BetaParams` | `ruvector-domain-expansion` `transfer::{MetaThompsonEngine, BetaParams}` | one domain with uniform priors; `select_arm` and `record_outcome` as in the crate, but a tie goes to a random tied arm (the crate: the first); a `ContextBucket` becomes a pair of probe bins, an `ArmId` an arm index. **Sampler deviation:** the crate's `BetaParams::sample` is not a Beta draw (a one-term normal approximation, or a power-law formula when α ≤ 1 or β ≤ 1, which the Beta(1, 1) prior hits); ours is numpy's exact `Generator.beta`. Transfer priors and cost EMAs are not ported |
-| `memory.backend.MemoryBackend` | — (adapter seam) | `NumpyBackend` now; `RuVectorBackend` in T22 |
+| `memory.backend.MemoryBackend` | — (adapter seam) | `NumpyBackend` (default) or `RuVectorBackend` (T22) |
 
-**Drop-in path (planned, T22; not built).** T22 plans a small maturin + PyO3 crate (`rust/ruvector_vfa_py/`) that depends on `ruvector-robotics` by git and exposes `EpisodicMemory`, `SemanticMemory`, `SkillLibrary`, and `CognitiveCore`. `RuVectorBackend` implements `MemoryBackend` on top of it. A parity test proves both backends return the same top-k on unit-norm vectors.
+**Drop-in path (built in T22).** A small maturin + PyO3 crate (`rust/ruvector_vfa_py/`) depends on `ruvector-robotics` by git and exposes `EpisodicMemory`, `SemanticMemory`, `SkillLibrary`, and `CognitiveCore`. `RuVectorBackend` implements `MemoryBackend` on top of it. A parity test proves both backends return the same top-k on unit-norm vectors.
 
 **Candidate extensions** (crate modules not used yet): `behavior_tree` (skill phases as a tree), `decision_engine` (utility-based θ selection), `world_model`, `perception::scene_graph`, and `bridge::indexing` (spatial index).
 
@@ -402,15 +404,15 @@ src/vfa/
   sim/                    # scene.py (MjSpec), scene_check.py, objects.py, sensors.py, recorder.py, env.py
   control/                # osc.py, gripper.py, throughput.py (T03 timing CLI), safety.py
   skills/                 # params.py, pick.py, place.py (T19), reflexes.py, residual.py (T21)
-  memory/                 # embeddings.py, backend.py, memory_system.py, skill_learning.py; ruvector_backend.py (planned, T22)
+  memory/                 # embeddings.py, backend.py, memory_system.py, skill_learning.py, ruvector_backend.py (T22)
   cognition/              # cognitive_core.py, system2.py, retry.py
-  experiments/            # baselines.py, bandit.py, benchmark.py, demo.py, run_all.py, train_residual.py (T21)
+  experiments/            # baselines.py, bandit.py, benchmark.py, demo.py, run_all.py, train_residual.py (T21), backend_speed.py (T22)
   viz/                    # force_plot.py, plots.py, video.py, report.py
 assets/menagerie/franka_emika_panda/   # vendored, pristine, Apache-2.0
 configs/                  # objects.toml, benchmark.toml, best_fixed.toml, benchmark.sha256, embedding_stats.npz, bandit.toml (T17a),
                           # benchmark_pick_place.toml + .sha256, embedding_stats_place.npz (T19), residual.npz (T21)
 scripts/                  # spike_grip.py (T05), record_episode.py and size_slip_detector.py (T06), make_fixtures.py and probe_classes.py (T10), sweep_place.py (T19), probe_residual.py (T21)
-rust/ruvector_vfa_py/     # planned, T22
+rust/ruvector_vfa_py/     # the PyO3 binding over ruvector-robotics (T22)
 tests/                    # fixtures/calib_episodes.npz (committed, ≤ 5 MB)
 docs/                     # BRIEF, ARCHITECTURE, FEASIBILITY, RESULTS, RUVECTOR_MAPPING, EXTENDING
 runs/                     # git-ignored artifacts
@@ -444,3 +446,4 @@ runs/                     # git-ignored artifacts
 | D20 | Pre-register T18's targets, held-out design, and ablation verdict rule before the first run on the evaluation seeds; judge a component by paired bootstrap intervals over situations | the evaluation seeds are scored once, so every rule that reads them must be fixed first; 3 seeds give too little spread to choose a wording after the fact |
 | D21 | Pick-and-place gets a table-impact break rule, its own benchmark file and hash, and its own place-phase key group; the lift benchmark, its rule, and its keys stay as they were (T19) | at the hand-picked grips the finger forces at the place stayed below every break force (at most 9.2 N on `brittle`, RESULTS §10.1), so without an impact rule `place_speed` and `release_height` would not matter; keeping the lift's rule, vectors, and keys unchanged leaves every lift result unchanged (1,143 quick attempts compared: no difference) |
 | D22 | The T21 residual shapes how fast the grip rises (a bounded step limit on the grip command), and it trains on replays of memory's own grasps on the calibration seeds | a constant offset (2 N less in SQUEEZE) cut the jerk 7 % on memory's grasps, while limiting every rise to 10 N/s cut it 24 % (RESULTS §11.2); replaying memory's grasps (with the θ that ran at the end) gives the residual memory's grips without putting System 2 in the ES loop or using a class label; those replays hold few slip rescues (0.916 success against 0.839 in the original run), which is one reason the mean-jerk target was missed (RESULTS §11.6) |
+| D23 | The Rust backend ranks in the crate's `EpisodicMemory` over `NumpyBackend`'s side table, and the binding returns the crate's scores (T22) | the crate stores no ids, payloads, or scores and has no persistence or filter, so the side table answers those and the crate does the search; one store type for every index keeps the tie order stable (its `SemanticMemory` is a `HashMap`), so both backends return the same hits |
