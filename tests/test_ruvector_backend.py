@@ -149,17 +149,6 @@ def test_ruvector_chunks_never_share_the_numpy_files(tmp_path) -> None:
         B.plan_condition(config, "naive", "quick", backend="ruvector")
 
 
-def test_a_ruvector_aggregate_keeps_the_numpy_metrics(tmp_path) -> None:
-    config = B.load_benchmark_config()
-    numpy = B.aggregate(config, "quick", tmp_path, partial=True)
-    before = (tmp_path / "quick" / "metrics.json").read_text()
-    rust = B.aggregate(config, "quick", tmp_path, partial=True, backend="ruvector")
-    assert (tmp_path / "quick" / "metrics.json").read_text() == before
-    assert (numpy["backend"], rust["backend"]) == ("numpy", "ruvector")
-    saved = json.loads((tmp_path / "quick" / "metrics_ruvector.json").read_text())
-    assert saved["backend"] == "ruvector"
-
-
 @pytest.mark.slow
 def test_a_memory_chunk_matches_the_numpy_backend(tmp_path) -> None:
     """memory_full on 6 situations: the same records with either backend."""

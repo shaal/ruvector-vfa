@@ -37,7 +37,8 @@ an attempt, the condition, its fixed θ, the range); a wall-clock deadline
 chunks it had started) stops submitting chunks, and the same command continues
 the work. ``--workers`` runs chunks in parallel processes (default
 ``min(8, cpu − 2)``). ``aggregate`` reads the chunks and writes
-``runs/benchmark/<profile>/metrics.json``; it refuses a condition with missing
+``runs/benchmark/<profile>/metrics.json`` (``metrics_<backend>.json`` with
+``--backend``, T22); it refuses a condition with missing
 chunks unless ``--partial`` (a learning condition with no chunk file at all is
 left out). A learning condition's run first runs ``naive`` on the same seeds and
 then prints success@1 per half and per block of ``BLOCK`` situations for both.
@@ -993,7 +994,8 @@ def aggregate(
     partial: bool = False,
     backend: str = "numpy",
 ) -> dict:
-    """Metrics of every condition → ``<profile>/metrics.json``.
+    """Metrics of every condition → ``<profile>/metrics.json`` (``metrics_<backend>.json``
+    for another memory backend; refer to ``metrics_path``).
 
     A condition with missing or stale chunks is listed under ``missing``; unless
     ``partial``, any missing chunk raises ``FileNotFoundError`` before writing.
@@ -1240,7 +1242,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
         return 0 if done else 3
     if command == "aggregate":
-        parser = argparse.ArgumentParser(description="aggregate chunk files into metrics.json")
+        parser = argparse.ArgumentParser(
+            description="aggregate chunk files into metrics.json (metrics_<backend>.json)"
+        )
         parser.add_argument("--profile", default="quick" if pick_place else "full")
         parser.add_argument("--out", type=Path, default=None, help=OUT_HELP)
         parser.add_argument("--partial", action="store_true", help="allow missing conditions")
@@ -1264,6 +1268,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if result["missing"]:
             print(f"missing chunks: {result['missing']}")
+        memory = MEMORY_CONDITIONS + RESIDUAL_CONDITIONS
+        if args.backend != "numpy" and not any(c in memory for c in result["conditions"]):
+            print(f"note: no {args.backend} chunks on this --out; only the baselines are in it")
         print(f"wrote {metrics_path(args.out, args.profile, args.backend)}")
         return 0
     if command == "freeze":

@@ -177,3 +177,20 @@ def test_freeze_help_writes_nothing(tmp_path, monkeypatch, capsys):
     assert not list(tmp_path.iterdir())
     assert B.main(["freeze", "--task", "pick_place"]) == 0
     assert B.PICK_PLACE_HASH.read_text().strip() == B.benchmark_hash(B.PICK_PLACE_FILES)
+
+
+def test_a_ruvector_aggregate_keeps_the_numpy_metrics(tmp_path, monkeypatch):
+    """T22: a ruvector aggregate writes its own file and reads chunks without the
+    Rust extension; a ruvector run still needs it."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "ruvector_vfa_py", None)  # the extension is not built
+    config = B.load_benchmark_config()
+    numpy = B.aggregate(config, "quick", tmp_path, partial=True)
+    before = (tmp_path / "quick" / "metrics.json").read_text()
+    rust = B.aggregate(config, "quick", tmp_path, partial=True, backend="ruvector")
+    assert (tmp_path / "quick" / "metrics.json").read_text() == before
+    assert (numpy["backend"], rust["backend"]) == ("numpy", "ruvector")
+    assert (tmp_path / "quick" / "metrics_ruvector.json").exists()
+    with pytest.raises(ImportError):
+        B.plan_condition(config, "memory_full", "quick", out=tmp_path, backend="ruvector")
