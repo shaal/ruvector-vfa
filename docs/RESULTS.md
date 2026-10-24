@@ -353,6 +353,7 @@ On the fresh seed too, `memory_full` needs fewer attempts than `random_retry` (1
 
 - **Training** (`uv run python -m vfa.experiments.train_residual --workers 8`, re-run until done; `--install` copies the weights to `configs/residual.npz`): numpy OpenAI-style ES on the calibration seeds only. The replay set is `memory_full`'s attempts on the `calib` profile (seed 0: 72 training episodes; seed 1: 71 validation episodes), each replayed with the θ that ran. 8 antithetic pairs per generation, σ 0.5, Adam step 0.1, 16 training episodes per generation (the same for every candidate), 30 generations. Reward per episode: success − 0.25 · jerk / 30 N/s − 0.05 · max(excess, 0) / 10 N. All of these, and the training curve's smoothing (a running mean over 5 generations of the validation reward of the center), were fixed before the first training run.
 - **Comparison** (quick profile, seeds 500 and 501, scored once with the installed weights): `memory_full+residual` meets the target if its force jerk (mean over seeds) is at least 20 % lower than `memory_full`'s and its success@1 is at most 0.03 lower.
+- **Confirmation** (added after the third quick scoring, §11.4, and pushed before this run): the same rule on the `full` profile (the evaluation seeds 1000–1002, which no residual run has seen), scored once with the installed weights.
 
 ### 11.2 Where the jerk comes from (probe)
 
