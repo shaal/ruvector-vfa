@@ -11,8 +11,10 @@ runs ``memory_full`` on the benchmark's ``calib`` profile (seeds 0 and 1,
 chunked and resumable like any benchmark run). Every attempt of that run becomes
 a replay episode: its situation, attempt (the env reset seed), and the θ that
 ran at the end. The residual acts after the probe, so replaying that θ from the
-start gives memory's grasp without System 2 in the loop and without any class
-label. Seed 0's attempts are the training pool, seed 1's the validation set.
+start gives memory's grips without System 2 in the loop and without any class
+label. That θ already holds the reflex and escalation raises, so the replays
+slip less than the original attempts (docs/RESULTS.md §11.6). Seed 0's attempts
+are the training pool, seed 1's the validation set.
 
 **Reward** of one episode: ``success − LAMBDA·jerk/J0 − MU·max(excess, 0)/E0``
 (force jerk and peak-force excess as ``benchmark.attempt_record`` computes them;
@@ -272,7 +274,8 @@ def train(out: Path, generations: int, batch: int, workers: int, deadline: float
             c = curve[-1]
             print(
                 f"generation {gen}: validation reward {c['reward']:.4f} success {c['success']:.3f} "
-                f"jerk {c['jerk']} excess {c['excess']} ({time.perf_counter() - t0:.0f} s)",
+                f"jerk {_fmt(c['jerk'], 1)} excess {_fmt(c['excess'], 2)} "
+                f"({time.perf_counter() - t0:.0f} s)",
                 flush=True,
             )
     if gen < generations:
@@ -288,6 +291,10 @@ def train(out: Path, generations: int, batch: int, workers: int, deadline: float
         f"{'non-decreasing' if monotone else 'NOT non-decreasing'}; wrote {out / 'residual.npz'}"
     )
     return True
+
+
+def _fmt(value: float | None, digits: int) -> str:
+    return "n/a" if value is None else f"{value:.{digits}f}"
 
 
 def _save(out: Path, center: np.ndarray, adam: Adam, gen: int, curve: list[dict], key: str) -> None:
