@@ -663,6 +663,7 @@ def plan_condition(
     out: Path = DEFAULT_OUT,
     save_episodes: str | None = None,
     backend: str = "numpy",
+    need_binding: bool = True,
 ) -> list[Job]:
     """The chunks of one condition on one profile (optionally only some seeds; ``backend``:
     the memory conditions' vector store, T22)."""
@@ -676,7 +677,8 @@ def plan_condition(
             )
         from vfa.memory.ruvector_backend import rust_module
 
-        rust_module()  # fail now, with the build steps, not in a worker
+        if need_binding:  # a run needs it; reading finished chunks does not
+            rust_module()  # fail now, with the build steps, not in a worker
     prof = config.profiles[profile]
     seeds = prof.seeds if seeds is None else tuple(seeds)
     learner = condition in LEARNING_CONDITIONS
@@ -818,9 +820,12 @@ def run_jobs(jobs: Sequence[Job], workers: int, deadline_s: float) -> bool:
 
 def _report(done: tuple[str, int, float], t0: float) -> None:
     path, n, wall = done
+    p = Path(path)
+    name = f"{p.parent.name}/{p.name}"
+    if p.parent.name in BACKENDS:  # a backend's folder: name the condition too
+        name = f"{p.parent.parent.name}/{name}"
     print(
-        f"  {Path(path).parent.name}/{Path(path).name}: {n} attempts in {wall:.0f} s "
-        f"(elapsed {time.perf_counter() - t0:.0f} s)",
+        f"  {name}: {n} attempts in {wall:.0f} s (elapsed {time.perf_counter() - t0:.0f} s)",
         flush=True,
     )
 
@@ -1014,7 +1019,9 @@ def aggregate(
         folder = out / profile / condition / (store if store != "numpy" else "")
         if condition in LEARNING_CONDITIONS and not any(folder.glob("*.json")):
             continue  # a learning condition that was never run on this --out
-        jobs = plan_condition(config, condition, profile, out=out, backend=store)
+        jobs = plan_condition(
+            config, condition, profile, out=out, backend=store, need_binding=False
+        )
         missing = [j.path for j in jobs if not _chunk_done(Path(j.path), j.key)]
         if missing:
             result["missing"][condition] = len(missing)
@@ -1027,8 +1034,16 @@ def aggregate(
             f"chunks missing or stale on profile {profile!r}: {result['missing']} "
             "(run the conditions, or pass --partial)"
         )
-    _write_json(out / profile / "metrics.json", result)
+    result["backend"] = backend
+    _write_json(metrics_path(out, profile, backend), result)
     return result
+
+
+def metrics_path(out: Path, profile: str, backend: str = "numpy") -> Path:
+    """Where ``aggregate`` writes: ``metrics.json``, or ``metrics_<backend>.json`` for a
+    memory backend other than numpy (it never replaces the numpy run's file)."""
+    name = "metrics.json" if backend == "numpy" else f"metrics_{backend}.json"
+    return out / profile / name
 
 
 def select_best_fixed(config: BenchmarkConfig, out: Path = DEFAULT_OUT) -> dict[str, Any]:
@@ -1249,7 +1264,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         if result["missing"]:
             print(f"missing chunks: {result['missing']}")
-        print(f"wrote {args.out / args.profile / 'metrics.json'}")
+        print(f"wrote {metrics_path(args.out, args.profile, args.backend)}")
         return 0
     if command == "freeze":
         parser = argparse.ArgumentParser(
