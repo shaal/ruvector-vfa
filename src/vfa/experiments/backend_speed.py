@@ -10,11 +10,14 @@ is the only possible gain. ``--size N`` stores N random unit vectors of the real
 ``key_probe`` dimension (with a record-like payload) in a fresh store of each
 backend, one at a time, and reports the insert time per record; then it times
 ``search(q, 5)`` for ``--queries`` random queries (1 000) and reports the median
-and the 95th percentile. Everything runs on one core in this process. A backend
-whose estimated run would pass ``--budget`` seconds (480, so one command stays
-under 9 minutes) is skipped, and the output says so. ``--demo`` runs ``vfa demo
---quick`` with each backend, twice, alternating, and reports each run's wall
-time. Results go to ``runs/backend_speed/`` as JSON.
+and the 95th percentile, once without a filter and once with a callable filter
+like System 2's (every search it makes is filtered: the crate has no filter, so
+``RuVectorBackend`` ranks every record and filters in Python). The JSON records
+the binding's build profile and the load average. Everything runs on one core in
+this process. A backend whose estimated run would pass ``--budget`` seconds
+(480, so one command stays under 9 minutes) is skipped, and the output says so.
+``--demo`` runs ``vfa demo --quick`` with each backend, twice, alternating, and
+reports each run's wall time. Results go to ``runs/backend_speed/`` as JSON.
 """
 
 from __future__ import annotations
@@ -34,6 +37,10 @@ from vfa.memory.ruvector_backend import RuVectorBackend, rust_module
 OUT = REPO_ROOT / "runs" / "backend_speed"
 BACKENDS = {"numpy": NumpyBackend, "ruvector": RuVectorBackend}
 PROBE_QUERIES = 20  # queries timed first to estimate a backend's whole run
+
+
+def FILTER(payload: dict) -> bool:  # noqa: N802 - like System 2's: other cubes, one outcome
+    return payload["success"] and payload["situation"] != 7
 
 
 def _payload(i: int) -> dict:
@@ -56,26 +63,25 @@ def time_backend(name: str, vectors: np.ndarray, queries: np.ndarray, budget: fl
     insert = time.perf_counter() - t0
     probe = []
     for q in queries[:PROBE_QUERIES]:
-        t = time.perf_counter()
-        store.search(q, 5)
-        probe.append(time.perf_counter() - t)
-    estimate = insert + float(np.mean(probe)) * len(queries)
+        for flt in (None, FILTER):
+            t = time.perf_counter()
+            store.search(q, 5, flt)
+            probe.append(time.perf_counter() - t)
+    estimate = insert + float(np.mean(probe)) * 2 * len(queries)
     if estimate > budget:
         return {"backend": name, "skipped": f"estimated {estimate:.0f} s > budget {budget:.0f} s"}
-    latencies = []
-    for q in queries:
-        t = time.perf_counter()
-        store.search(q, 5)
-        latencies.append(time.perf_counter() - t)
-    lat = np.array(latencies)
-    return {
-        "backend": name,
-        "records": len(vectors),
-        "insert_us_per_record": 1e6 * insert / len(vectors),
-        "search_ms_median": 1e3 * float(np.median(lat)),
-        "search_ms_p95": 1e3 * float(np.percentile(lat, 95)),
-        "queries": len(queries),
-    }
+    row = {"backend": name, "records": len(vectors), "queries": len(queries)}
+    row["insert_us_per_record"] = 1e6 * insert / len(vectors)
+    for label, flt in (("search", None), ("filtered", FILTER)):
+        latencies = []
+        for q in queries:
+            t = time.perf_counter()
+            store.search(q, 5, flt)
+            latencies.append(time.perf_counter() - t)
+        lat = np.array(latencies)
+        row[f"{label}_ms_median"] = 1e3 * float(np.median(lat))
+        row[f"{label}_ms_p95"] = 1e3 * float(np.percentile(lat, 95))
+    return row
 
 
 def run_size(size: int, n_queries: int, budget: float, seed: int = 0) -> list[dict]:
@@ -120,7 +126,9 @@ def _line(row: dict) -> str:
         f"{row['backend']:9s} {row['records']:7d} records: "
         f"insert {row['insert_us_per_record']:8.1f} µs/record; "
         f"search top-5 median {row['search_ms_median']:8.3f} ms, "
-        f"p95 {row['search_ms_p95']:8.3f} ms ({row['queries']} queries)"
+        f"p95 {row['search_ms_p95']:8.3f} ms; filtered median "
+        f"{row['filtered_ms_median']:8.3f} ms, p95 {row['filtered_ms_p95']:8.3f} ms "
+        f"({row['queries']} queries)"
     )
 
 
@@ -140,7 +148,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.size < 1 or args.queries < PROBE_QUERIES:
         raise SystemExit(f"--size must be >= 1 and --queries >= {PROBE_QUERIES}")
     rows = run_size(args.size, args.queries, args.budget)
-    _write_json(OUT / f"size_{args.size}.json", {"size": args.size, "rows": rows})
+    import os
+
+    doc = {
+        "size": args.size,
+        "rows": rows,
+        "debug_build": bool(rust_module().DEBUG_BUILD),
+        "load_average": os.getloadavg(),
+    }
+    _write_json(OUT / f"size_{args.size}.json", doc)
     return 0
 
 

@@ -244,5 +244,6 @@ fn ruvector_vfa_py(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SkillLibrary>()?;
     m.add_class::<CognitiveCore>()?;
     m.add("RUVECTOR_REV", "3e8429739fc0a3878b553a87bb91e7f66d8c0cbd")?;
+    m.add("DEBUG_BUILD", cfg!(debug_assertions))?;
     Ok(())
 }

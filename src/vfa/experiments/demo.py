@@ -275,6 +275,14 @@ def main(argv: Sequence[str] | None = None, prog: str = "vfa demo") -> int:
     n = QUICK_SITUATIONS if args.quick else FULL_SITUATIONS
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run = args.out if args.out is not None else RUNS / f"demo-{stamp}"
+    if args.backend == "ruvector":
+        from vfa.memory.ruvector_backend import rust_module
+
+        try:
+            rust_module()  # before the run directory exists
+        except ImportError as exc:
+            print(exc, file=sys.stderr)
+            return 2
     try:
         run.mkdir(parents=True, exist_ok=False)
     except FileExistsError:

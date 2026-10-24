@@ -415,14 +415,14 @@ The mean over successful attempts is set by a few attempts at 100 N/s and more: 
 
 **Parity.** On 1 000 stored unit vectors of the `key_probe` dimension and 1 000 random queries, both backends return the same top-5 ids in the same order with the same scores, exact ties included (`tests/test_ruvector_backend.py`). `uv run vfa demo --quick --backend ruvector` runs end to end, and its summary is the numpy run's (memory_full: success@1 0.800, 0.867 over cubes 15–29, success@5 1.000, 1.27 attempts, break rate 0.079); every attempt record of the three conditions is identical apart from wall time, and so are the 200 handoff log lines apart from System 2's latency.
 
-**Speed** (`uv run python -m vfa.experiments.backend_speed --size N`, release build, one core, random unit vectors of the `key_probe` dimension with record-like payloads, 1 000 queries per size, a shared 16-core Mac at a load average of 9–12):
+**Speed** (`uv run python -m vfa.experiments.backend_speed --size N`, release build, one core, random unit vectors of the `key_probe` dimension with record-like payloads, 1 000 queries per size; a shared 16-core Mac at load averages of 7–9, recorded in `runs/backend_speed/size_N.json`). "Filtered" is a search with a callable filter like System 2's: every search System 2 makes is filtered.
 
-| records | insert, numpy [µs/record] | insert, ruvector [µs/record] | search top-5, numpy: median / p95 [ms] | search top-5, ruvector: median / p95 [ms] |
-|---|---|---|---|---|
-| 1 000 | 8.9 | 13.1 | 0.168 / 0.246 | 0.106 / 0.147 |
-| 10 000 | 9.2 | 14.4 | 1.81 / 2.26 | 0.97 / 1.22 |
-| 100 000 | 10.4 | 27.5 | 20.8 / 27.8 | 11.6 / 18.9 |
+| records | insert, numpy / ruvector [µs/record] | search top-5, numpy: median / p95 [ms] | search top-5, ruvector: median / p95 [ms] | filtered, numpy: median / p95 [ms] | filtered, ruvector: median / p95 [ms] |
+|---|---|---|---|---|---|
+| 1 000 | 11.2 / 15.5 | 0.216 / 0.285 | 0.140 / 0.175 | 0.343 / 0.487 | 0.482 / 0.641 |
+| 10 000 | 11.4 / 16.4 | 2.21 / 3.05 | 1.15 / 1.37 | 3.95 / 5.06 | 5.58 / 7.73 |
+| 100 000 | 12.3 / 17.9 | 24.6 / 41.7 | 11.5 / 16.0 | 39.6 / 53.3 | 104.1 / 128.7 |
 
 `uv run python -m vfa.experiments.backend_speed --demo` timed `vfa demo --quick` twice per backend, alternating: 39.0 and 36.8 s with numpy, 36.6 and 35.8 s with ruvector.
 
-The Rust crate's median search is 1.6 to 1.9 times as fast as `NumpyBackend`'s at every size, probably because `NumpyBackend` builds a full left-to-right cumulative sum over every stored vector for each query (the price of its bit-exact parity with the crate), while the crate runs one tight loop. It inserts more slowly (1.5 to 2.6 times), because each insert also converts the vector and the record's text into the crate's types through PyO3 on top of the side table both backends keep. In the demo, where memory holds about 40 records and physics takes the time, the two backends do not differ measurably.
+**The Rust crate is faster only where memory does not use it.** Its unfiltered median search is 1.5 to 2.1 times as fast as `NumpyBackend`'s, probably because `NumpyBackend` builds a full left-to-right cumulative sum over every stored vector for each query (the price of its bit-exact parity with the crate), while the crate runs one tight loop. But every search System 2 makes is filtered, and the crate has no filter: `RuVectorBackend` brings the whole ranking back through PyO3 and filters it in Python, so its filtered median search is 1.4 to 2.6 times as slow. It also inserts 1.4 to 1.5 times as slowly (each insert converts the vector and the record's text into the crate's types on top of the side table both backends keep). In the demo, where memory holds about 40 records and physics takes the time, the two backends do not differ measurably.

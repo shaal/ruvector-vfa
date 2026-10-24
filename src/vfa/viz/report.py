@@ -101,9 +101,7 @@ def write_report(run_dir: str | Path) -> Path:
         parts += [f"<h2>{html.escape(title)}</h2>", _img(images[name], title)]
     parts += [
         "<h2>RuVector components</h2>",
-        f"<p>Backend: <code>{backend}</code> (a Python mirror of "
-        "<code>ruvector_robotics::cognitive</code>; the Rust crate runs only with T22's "
-        "<code>--backend ruvector</code>).</p>",
+        f"<p>Backend: <code>{backend}</code> ({html.escape(_backend_note(backend))}).</p>",
     ]
     for name, title, _ in COMPONENT_PLOTS:
         parts += [f"<h3>{html.escape(title)}</h3>", _img(images[name], title)]
@@ -117,3 +115,9 @@ def write_report(run_dir: str | Path) -> Path:
     out = run.path / "report.html"
     out.write_text("\n".join(parts))
     return out
+
+
+def _backend_note(backend: str) -> str:
+    from vfa.experiments.demo import BACKEND_NOTES  # one wording for the console and the page
+
+    return BACKEND_NOTES.get(backend, "")

@@ -1,6 +1,6 @@
 # RuVector mapping
 
-This repository mirrors types of the Rust crate `ruvector-robotics` in Python: the memory tiers, the skill library, and the cognitive core. The bandit baseline mirrors `MetaThompsonEngine` and `BetaParams` from `ruvector-domain-expansion`. The default backend is pure Python and numpy (`NumpyBackend`, [ARCHITECTURE](ARCHITECTURE.md) §12 "Decision log", D9), and no Python file imports the Rust crate. The Rust backend (`RuVectorBackend`, a PyO3 binding) is planned in T22 and is not in `src/`.
+This repository mirrors types of the Rust crate `ruvector-robotics` in Python: the memory tiers, the skill library, and the cognitive core. The bandit baseline mirrors `MetaThompsonEngine` and `BetaParams` from `ruvector-domain-expansion`. The default backend is pure Python and numpy (`NumpyBackend`, [ARCHITECTURE](ARCHITECTURE.md) §12 "Decision log", D9), and the Rust crate is optional: T22's `RuVectorBackend` (`src/vfa/memory/ruvector_backend.py`) runs memory's search through it via the PyO3 binding in `rust/ruvector_vfa_py` (section 3).
 
 Sources: [ROADMAP](../ROADMAP.md) (T12 to T14, T17a, T22); [ARCHITECTURE](ARCHITECTURE.md) §5 "Memory", §6 "Dual-process loop", §10 "Mapping to `ruvector-robotics`", §12 "Decision log"; and the mirror modules [memory_system.py](../src/vfa/memory/memory_system.py), [backend.py](../src/vfa/memory/backend.py), [skill_learning.py](../src/vfa/memory/skill_learning.py), [embeddings.py](../src/vfa/memory/embeddings.py), [cognitive_core.py](../src/vfa/cognition/cognitive_core.py), [system2.py](../src/vfa/cognition/system2.py), and [bandit.py](../src/vfa/experiments/bandit.py). Each mirror module has a `RuVector mapping:` paragraph in its docstring.
 
@@ -28,7 +28,7 @@ Rust paths below are relative to `crates/ruvector-robotics/src/cognitive/` in `g
 | `MemoryBackend` (Protocol) | — | The adapter seam. See 3.1. |
 | `NumpyBackend` | the store behind `EpisodicMemory` and `SemanticMemory` | Brute force. The crate scans a `Vec<Episode>` and a `HashMap<String, Vec<f64>>` by dot product. |
 | `Hit` | — | Fields `id`, `score`, `payload`. |
-| `EpisodeView`, `Embedder`, `PlaceEmbedder` | — | Build the retrieval keys (ARCHITECTURE §5.1 "Embeddings and retrieval keys"). In the T22 plan, a key is the one entry of `Episode.percepts` (2.2). |
+| `EpisodeView`, `Embedder`, `PlaceEmbedder` | — | Build the retrieval keys (ARCHITECTURE §5.1 "Embeddings and retrieval keys"). In `RuVectorBackend` (T22), a key is the one entry of `Episode.percepts` (2.2). |
 
 ### 1.2 Skills and demonstrations
 
@@ -88,7 +88,7 @@ The Rust `Episode` (`memory_system.rs`) holds `percepts: Vec<Vec<f64>>`, `action
 
 Our `EpisodeRecord` (`memory_system.py`) holds `id`, `situation`, `attempt`, `theta`, `result`, `utility`, `timestamp`, `info`, and `theta_final`. `success` and `failure_mode` derive from `result`.
 
-The planned mapping (ROADMAP T22; the `memory_system.py` docstring):
+The mapping `RuVectorBackend` uses (T22; the `ruvector_backend.py` docstring):
 
 - The key vector goes into `percepts`, one entry per `Episode`. Each key type gets its own Rust `EpisodicMemory`, because the crate's `recall_similar` ranks every episode in one store.
 - θ as JSON, and the record id, go into `actions`.
@@ -159,7 +159,7 @@ T22 built the plan below: `rust/ruvector_vfa_py` (a maturin + PyO3 crate over `r
 - The attribute `metric` (`"cosine"`), which `load_index` checks against the saved index; `MemorySystem.save` records the backend class name.
 - `check(vector)`, run before any call into Rust.
 - `add(id, vector, payload)`. The vector goes to the crate. The payload stays in Python, because the crate has no payload.
-- `search(vector, k, filter)`. It returns `Hit`s in descending score order, with ties in insertion order. The score is the dot product. The crate's `recall_similar` returns no score, so the binding must return one or the backend must recompute it (open, see 3.5).
+- `search(vector, k, filter)`. It returns `Hit`s in descending score order, with ties in insertion order. The score is the dot product. The crate's `recall_similar` returns no score, so the binding returns one (3.5).
 - `update`, `payload`, `ids`, `__contains__`, and `__len__` use a Python side table.
 - `save` and `load`. The crate has no persistence, so Python writes the files.
 

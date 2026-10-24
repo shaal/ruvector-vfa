@@ -131,9 +131,22 @@ def test_the_binding_exposes_the_crate_types() -> None:
     assert (core.state, core.mode) == ("Idle", "Reactive")
     assert core.perceive("probe", [1.0], 0.9, 0) == "Perceiving"
     assert core.think() is not None and core.state == "Thinking"
+    assert core.act_wait(10, 7, 0.8, 0.5) == 7 and core.state == "Acting"
     core.learn(True, 1.0, "ok")
     assert core.state == "Idle" and core.cumulative_reward == pytest.approx(0.01)
     assert R.RUVECTOR_REV == "3e8429739fc0a3878b553a87bb91e7f66d8c0cbd"
+
+
+def test_ruvector_chunks_never_share_the_numpy_files(tmp_path) -> None:
+    config = B.load_benchmark_config()
+    for cfg in (config, B.load_pick_place_config()):
+        numpy = B.plan_condition(cfg, "memory_full", "quick", out=tmp_path)
+        rust = B.plan_condition(cfg, "memory_full", "quick", out=tmp_path, backend="ruvector")
+        assert not {j.path for j in numpy} & {j.path for j in rust}
+        assert all("/memory_full/ruvector/" in j.path for j in rust)
+        assert all(j.key["backend"]["binding"] == B.benchmark_hash(B.BINDING_FILES) for j in rust)
+    with pytest.raises(ValueError):
+        B.plan_condition(config, "naive", "quick", backend="ruvector")
 
 
 @pytest.mark.slow

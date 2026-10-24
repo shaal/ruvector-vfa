@@ -3,7 +3,9 @@
 ARCHITECTURE §5.4, §10; ``docs/RUVECTOR_MAPPING.md`` §3. The ranking runs in
 ``ruvector-robotics``' ``EpisodicMemory`` (``recall_similar``), reached through
 the PyO3 binding in ``rust/ruvector_vfa_py`` (build it with ``uv sync --extra
-ruvector`` and ``uv run maturin develop -m rust/ruvector_vfa_py/Cargo.toml``).
+ruvector``, then ``uv run maturin develop --release -m
+rust/ruvector_vfa_py/Cargo.toml``; a sync removes it again, and a debug build
+searches many times slower).
 
 **Mapping.** Each ``add(id, vector, payload)`` stores one Rust ``Episode``: the
 unit-norm key is its single percept; ``actions`` holds the record id and θ as
@@ -19,7 +21,8 @@ changes the side table, not the stored episode.
 (``recall_similar``, through the binding's ``recall_similar_scored``, which
 returns each episode's score by the crate's own formula), maps each episode
 back to its id through ``actions``, and applies the filter in Python, so a
-filtered search ranks every record (the crate has no filter). The crate's dot
+filtered search (every search System 2 makes) brings the whole ranking back
+through PyO3 (the crate has no filter). The crate's dot
 product sums left to right and its sort is stable, as ``NumpyBackend``'s are,
 so both return the same ids, in the same order, with the same scores
 (``tests/test_ruvector_backend.py``). Cosine only: the crate ranks by the raw
@@ -44,7 +47,7 @@ from vfa.memory.backend import Filter, Hit, NumpyBackend, check_k, matches, plai
 
 BUILD_HINT = (
     "the ruvector backend needs the Rust extension: uv sync --extra ruvector && "
-    "uv run maturin develop -m rust/ruvector_vfa_py/Cargo.toml"
+    "uv run maturin develop --release -m rust/ruvector_vfa_py/Cargo.toml"
 )
 
 

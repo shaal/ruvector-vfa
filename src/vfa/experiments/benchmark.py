@@ -127,9 +127,12 @@ PICK_PLACE_OUT = REPO_ROOT / "runs" / "benchmark_pick_place"
 PICK_PLACE_CONDITIONS: tuple[str, ...] = ("naive", "random_retry", "memory_full")
 TASKS: tuple[str, ...] = ("lift", "pick_place")
 # Memory backends (T22): "ruvector" runs memory's search through the Rust crate
-# (vfa.memory.ruvector_backend); its runs go to their own root.
+# (vfa.memory.ruvector_backend); its chunks sit in a "ruvector" folder under the
+# condition's, and their key carries a hash of the binding's source.
 BACKENDS: tuple[str, ...] = ("numpy", "ruvector")
-RUVECTOR_OUT = REPO_ROOT / "runs" / "benchmark_ruvector"
+BINDING_FILES: tuple[Path, ...] = tuple(
+    REPO_ROOT / "rust" / "ruvector_vfa_py" / f for f in ("Cargo.toml", "Cargo.lock", "src/lib.rs")
+)
 CHUNK = 15  # situations per chunk
 DEFAULT_DEADLINE_S = 400.0  # + the chunks already running (≤ about 100 s each)
 LATE_FROM = 20  # success_at_1_late: situations 21-60 (0-based index >= 20)
@@ -674,7 +677,6 @@ def plan_condition(
         from vfa.memory.ruvector_backend import rust_module
 
         rust_module()  # fail now, with the build steps, not in a worker
-        out = RUVECTOR_OUT if out == DEFAULT_OUT else out
     prof = config.profiles[profile]
     seeds = prof.seeds if seeds is None else tuple(seeds)
     learner = condition in LEARNING_CONDITIONS
@@ -689,6 +691,8 @@ def plan_condition(
     chunk = prof.situations if learner else CHUNK
     code = code_fingerprint()
     extra: dict[str, Any] = {}
+    if backend != "numpy":
+        extra["backend"] = {"name": backend, "binding": benchmark_hash(BINDING_FILES)}
     if condition == FROZEN:
         if WARMUP["seed"] in prof.seeds or WARMUP["seed"] in seeds:
             raise ValueError(
@@ -722,9 +726,11 @@ def plan_condition(
             }
             if config.task != "lift":
                 key["task"] = config.task
+
+            folder = out / profile / condition
             if backend != "numpy":
-                key["backend"] = backend
-            path = out / profile / condition / f"seed{seed}_{start:03d}-{end:03d}.json"
+                folder = folder / backend  # never the numpy run's files
+            path = folder / f"seed{seed}_{start:03d}-{end:03d}.json"
             jobs.append(
                 Job(
                     condition,
@@ -976,7 +982,11 @@ def combine(per_seed: Mapping[int, dict]) -> dict[str, Any]:
 
 
 def aggregate(
-    config: BenchmarkConfig, profile: str, out: Path = DEFAULT_OUT, partial: bool = False
+    config: BenchmarkConfig,
+    profile: str,
+    out: Path = DEFAULT_OUT,
+    partial: bool = False,
+    backend: str = "numpy",
 ) -> dict:
     """Metrics of every condition → ``<profile>/metrics.json``.
 
@@ -1000,9 +1010,11 @@ def aggregate(
         "missing": {},
     }
     for condition in PICK_PLACE_CONDITIONS if pick_place else ALL_CONDITIONS:
-        if condition in LEARNING_CONDITIONS and not any((out / profile / condition).glob("*.json")):
+        store = backend if condition in MEMORY_CONDITIONS + RESIDUAL_CONDITIONS else "numpy"
+        folder = out / profile / condition / (store if store != "numpy" else "")
+        if condition in LEARNING_CONDITIONS and not any(folder.glob("*.json")):
             continue  # a learning condition that was never run on this --out
-        jobs = plan_condition(config, condition, profile, out=out)
+        jobs = plan_condition(config, condition, profile, out=out, backend=store)
         missing = [j.path for j in jobs if not _chunk_done(Path(j.path), j.key)]
         if missing:
             result["missing"][condition] = len(missing)
@@ -1122,8 +1134,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--backend",
         choices=BACKENDS,
         default="numpy",
-        help="memory's vector store (ruvector: the Rust crate, T22; default --out "
-        "runs/benchmark_ruvector)",
+        help="memory's vector store (ruvector: the Rust crate, T22; its chunks go to a "
+        "ruvector folder under the condition's)",
     )
     return parser
 
@@ -1163,8 +1175,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         """Parse, then resolve the default output root (pick_place has its own)."""
         args = parser.parse_args(argv)
         args.out = _out(config, DEFAULT_OUT if args.out is None else args.out)
-        if getattr(args, "backend", "numpy") != "numpy" and args.out == DEFAULT_OUT:
-            args.out = RUVECTOR_OUT  # the baselines of a ruvector run go there too
         return args
 
     if pick_place and command not in ("run", "aggregate", "freeze"):
@@ -1186,7 +1196,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 None if args.save_episodes is None else str(Path(args.save_episodes).resolve()),
                 args.backend,
             )
-        except (ValueError, FileNotFoundError) as exc:
+        except (ValueError, FileNotFoundError, ImportError) as exc:  # ImportError: no binding
             raise SystemExit(str(exc)) from exc
         if args.save_episodes is not None:
             skipped = sum(_chunk_done(Path(j.path), j.key) for j in jobs)
@@ -1219,13 +1229,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.add_argument("--profile", default="quick" if pick_place else "full")
         parser.add_argument("--out", type=Path, default=None, help=OUT_HELP)
         parser.add_argument("--partial", action="store_true", help="allow missing conditions")
+        parser.add_argument("--backend", choices=BACKENDS, default="numpy", help="memory's store")
         _task_option(parser)
         args = parse(parser)
         if args.profile not in config.profiles:
             raise SystemExit(f"--profile must be one of {sorted(config.profiles)}")
         try:
-            result = aggregate(config, args.profile, args.out, args.partial)
-        except FileNotFoundError as exc:
+            result = aggregate(config, args.profile, args.out, args.partial, args.backend)
+        except (FileNotFoundError, ImportError) as exc:
             print(exc, file=sys.stderr)
             return 3
         for name, c in result["conditions"].items():
