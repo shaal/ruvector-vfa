@@ -142,9 +142,9 @@ These come from the `bandit.py` docstring.
 - **Ties.** The crate's `EpisodicMemory` builds its scores in insertion order and sorts with `sort_by`, which is stable. Its ties therefore keep insertion order, as `NumpyBackend` does with `argsort(..., kind="stable")`. The crate's `SemanticMemory` iterates a `HashMap`, so its ties come out in no fixed order.
 - **Python only.** `reinforce`, payload `update`, and `consolidate`. The crate's `recall_similar` returns no scores, so the `similarity` and `score` fields of `Recall` and the `score` of `Hit` have no crate counterpart on the episodic side.
 
-## 3. Drop-in plan (T22, a plan)
+## 3. The drop-in (built in T22)
 
-Nothing in this section is built. At T20, `src/vfa/memory/ruvector_backend.py` and a `rust/` directory do not exist, and `cli.py` and `experiments/` have no `--backend` option. The only `MemorySystem()` in `src/` is the default inside `RetrievalPolicy.__init__`.
+T22 built the plan below: `rust/ruvector_vfa_py` (a maturin + PyO3 crate over `ruvector-robotics` at `rev = "3e8429739fc0a3878b553a87bb91e7f66d8c0cbd"`), `vfa/memory/ruvector_backend.py` (`RuVectorBackend`), `--backend ruvector` on the benchmark and the demo, and `vfa/experiments/backend_speed.py`. The answers to the open questions are in 3.5; the measured parity and speed are in RESULTS §12.
 
 ### 3.1 The seam (exists now)
 
@@ -168,20 +168,18 @@ Nothing in this section is built. At T20, `src/vfa/memory/ruvector_backend.py` a
 - For the same unit-norm vectors, the Rust backend and `NumpyBackend` return the same top-k ids in the same order, on 1 000 random queries.
 - `vfa demo --quick --backend ruvector` runs, and its summary matches the numpy run with the same seed.
 - The Rust tests skip when the extension is not built. The optional `ruvector` extra uses `maturin`.
-- Speed: a planned `vfa/experiments/backend_speed.py` times both backends at 1 000, 10 000, and 100 000 records, one command per size. Speed is not a gate. A slower Rust backend is a valid finding (ROADMAP T22).
+- Speed: `vfa/experiments/backend_speed.py` times both backends at 1 000, 10 000, and 100 000 records, one command per size (RESULTS §12). Speed is not a gate.
 
 ### 3.4 What stays and what changes
 
 - **Stays in Python:** embeddings and keys, `ranking_score` and utility, filters, payloads, `reinforce`, `consolidate`, the θ side tables, `RetrievalPolicy`, the retry loop, the bandit, and the benchmark.
 - **Changes:** the index inside `EpisodicMemory` and `SemanticMemory`, which the factory supplies. ROADMAP T22 also lists `SkillLibrary` and `CognitiveCore` for the binding. The decision logic of `CognitiveCore` stays in Python. The crate's `think()` takes no arguments and picks the most confident percept, so it does not express our policy call.
 
-### 3.5 Open questions for T22
+### 3.5 How T22 answered the open questions
 
-These are not resolved here.
-
-1. **Scores.** Return the score from the binding, or recompute the dot product in Python (2.1, 3.2).
-2. **Filter cost.** A Python filter needs the candidates first. The backend must fetch all candidates, or over-fetch and cut (3.2).
-3. **One factory, two index kinds.** A Rust `SemanticMemory` stores a name and an embedding. `MemoryBackend.add` takes an id, a vector, and a payload. ROADMAP T22 does not say how the two fit. The payload would stay in Python.
-4. **Semantic ties.** The crate's order for ties is not fixed (2.7).
-5. **`CognitiveCore` binding.** ROADMAP T22 lists it. Its value is open, because the decision logic stays in Python.
-6. **Pin.** ROADMAP T22 names `rev = "3e8429739fc0a3878b553a87bb91e7f66d8c0cbd"`. Confirm it against the remote with `git ls-remote`, or pick a newer commit that touches the crate, as T22 says.
+1. **Scores.** The binding's `recall_similar_scored` calls the crate's `recall_similar` and returns each episode with its score, recomputed by the crate's own formula (a left-to-right dot product of the query and the flattened percepts). The order is the crate's; the scores equal `NumpyBackend`'s bit for bit.
+2. **Filter cost.** A filtered search asks the crate for its whole ranking and filters in Python; an unfiltered one asks for k.
+3. **One factory, two index kinds.** `RuVectorBackend` keeps every index, the semantic tier's included, in a Rust `EpisodicMemory`: the key is the one percept, `actions` holds the record id and θ as JSON, `reward` the signed outcome. The binding also exposes `SemanticMemory`, but memory does not use it.
+4. **Semantic ties.** Avoided by 3: the `EpisodicMemory` sort is stable, so ties keep insertion order as in `NumpyBackend`.
+5. **`CognitiveCore` binding.** Exposed for its transitions (perceive → think → act → learn, mode, state) and tested; the decision logic stays in Python.
+6. **Pin.** Confirmed with the GitHub API on 2026-10-23: `3e8429739fc0a3878b553a87bb91e7f66d8c0cbd` is still upstream's latest commit touching `crates/ruvector-robotics`.

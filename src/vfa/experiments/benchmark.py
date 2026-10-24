@@ -126,6 +126,10 @@ PICK_PLACE_FILES: tuple[Path, ...] = (PICK_PLACE_CONFIG, OBJECTS_PATH)
 PICK_PLACE_OUT = REPO_ROOT / "runs" / "benchmark_pick_place"
 PICK_PLACE_CONDITIONS: tuple[str, ...] = ("naive", "random_retry", "memory_full")
 TASKS: tuple[str, ...] = ("lift", "pick_place")
+# Memory backends (T22): "ruvector" runs memory's search through the Rust crate
+# (vfa.memory.ruvector_backend); its runs go to their own root.
+BACKENDS: tuple[str, ...] = ("numpy", "ruvector")
+RUVECTOR_OUT = REPO_ROOT / "runs" / "benchmark_ruvector"
 CHUNK = 15  # situations per chunk
 DEFAULT_DEADLINE_S = 400.0  # + the chunks already running (≤ about 100 s each)
 LATE_FROM = 20  # success_at_1_late: situations 21-60 (0-based index >= 20)
@@ -462,6 +466,7 @@ class Job:
     noise: str
     save_episodes: str | None = None
     task: str = "lift"
+    backend: str = "numpy"
 
 
 _WORKER: dict[str, Any] = {}
@@ -538,12 +543,20 @@ def _run_learner(
     if job.condition in BANDIT_CONDITIONS:
         rng = np.random.default_rng((job.seed, BANDIT_STREAM))
         policy = make_policy(job.condition, rng, job.key["bandit"])  # the key's arms and edges
-    elif job.task == "pick_place":
-        from vfa.memory.embeddings import PlaceEmbedder
-
-        policy = RetrievalPolicy(embedder=PlaceEmbedder(), **MEMORY_POLICIES[job.condition])
     else:
-        policy = RetrievalPolicy(**MEMORY_POLICIES.get(job.condition, {}))
+        memory = None
+        if job.backend == "ruvector":
+            from vfa.memory.memory_system import MemorySystem
+            from vfa.memory.ruvector_backend import RuVectorBackend
+
+            memory = MemorySystem(backend_factory=RuVectorBackend)
+        settings = MEMORY_POLICIES.get(job.condition, {})
+        if job.task == "pick_place":
+            from vfa.memory.embeddings import PlaceEmbedder
+
+            policy = RetrievalPolicy(memory, embedder=PlaceEmbedder(), **settings)
+        else:
+            policy = RetrievalPolicy(memory, **settings)
     if job.condition in RESIDUAL_CONDITIONS:
         from vfa.skills.residual import ResidualPolicy
 
@@ -646,9 +659,22 @@ def plan_condition(
     seeds: Sequence[int] | None = None,
     out: Path = DEFAULT_OUT,
     save_episodes: str | None = None,
+    backend: str = "numpy",
 ) -> list[Job]:
-    """The chunks of one condition on one profile (optionally only some seeds)."""
+    """The chunks of one condition on one profile (optionally only some seeds; ``backend``:
+    the memory conditions' vector store, T22)."""
     out = _out(config, out)
+    if backend not in BACKENDS:
+        raise ValueError(f"backend must be one of {BACKENDS}, got {backend!r}")
+    if backend != "numpy":
+        if condition not in MEMORY_CONDITIONS + RESIDUAL_CONDITIONS:
+            raise ValueError(
+                f"--backend {backend} applies to the memory conditions, not {condition!r}"
+            )
+        from vfa.memory.ruvector_backend import rust_module
+
+        rust_module()  # fail now, with the build steps, not in a worker
+        out = RUVECTOR_OUT if out == DEFAULT_OUT else out
     prof = config.profiles[profile]
     seeds = prof.seeds if seeds is None else tuple(seeds)
     learner = condition in LEARNING_CONDITIONS
@@ -696,6 +722,8 @@ def plan_condition(
             }
             if config.task != "lift":
                 key["task"] = config.task
+            if backend != "numpy":
+                key["backend"] = backend
             path = out / profile / condition / f"seed{seed}_{start:03d}-{end:03d}.json"
             jobs.append(
                 Job(
@@ -710,6 +738,7 @@ def plan_condition(
                     config.noise,
                     save_episodes,
                     config.task,
+                    backend,
                 )
             )
     return jobs
@@ -883,6 +912,7 @@ def learning(
     profile: str,
     out: Path = DEFAULT_OUT,
     seeds: Sequence[int] | None = None,
+    backend: str = "numpy",
 ) -> dict[str, Any]:
     """success@1 per half and per block of ``BLOCK`` situations, pooled over the
     seeds (default: the profile's), for ``condition`` and ``naive``; a condition
@@ -891,7 +921,8 @@ def learning(
     half = n // 2
     result: dict[str, Any] = {"situations": n, "conditions": {}, "missing": []}
     for name in dict.fromkeys((condition, "naive")):
-        jobs = plan_condition(config, name, profile, seeds, out=out)
+        store = backend if name == condition else "numpy"
+        jobs = plan_condition(config, name, profile, seeds, out=out, backend=store)
         if not all(_chunk_done(Path(j.path), j.key) for j in jobs):
             result["missing"].append(name)
             continue
@@ -917,8 +948,9 @@ def print_learning(
     profile: str,
     out: Path,
     seeds: Sequence[int] | None = None,
+    backend: str = "numpy",
 ) -> None:
-    report = learning(config, condition, profile, out, seeds)
+    report = learning(config, condition, profile, out, seeds, backend)
     for name in report["missing"]:
         print(f"{name}: chunks missing or stale on this --out; no learning report")
     half = report["situations"] // 2
@@ -1086,6 +1118,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed", type=int, action="append", help="only these seeds")
     _common(parser)
     parser.add_argument("--save-episodes", default=None, help="save every episode here")
+    parser.add_argument(
+        "--backend",
+        choices=BACKENDS,
+        default="numpy",
+        help="memory's vector store (ruvector: the Rust crate, T22; default --out "
+        "runs/benchmark_ruvector)",
+    )
     return parser
 
 
@@ -1124,6 +1163,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         """Parse, then resolve the default output root (pick_place has its own)."""
         args = parser.parse_args(argv)
         args.out = _out(config, DEFAULT_OUT if args.out is None else args.out)
+        if getattr(args, "backend", "numpy") != "numpy" and args.out == DEFAULT_OUT:
+            args.out = RUVECTOR_OUT  # the baselines of a ruvector run go there too
         return args
 
     if pick_place and command not in ("run", "aggregate", "freeze"):
@@ -1143,6 +1184,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.seed,
                 args.out,
                 None if args.save_episodes is None else str(Path(args.save_episodes).resolve()),
+                args.backend,
             )
         except (ValueError, FileNotFoundError) as exc:
             raise SystemExit(str(exc)) from exc
@@ -1160,7 +1202,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if done:
             by_seed = load_records(jobs)
             if args.condition in LEARNING_CONDITIONS:
-                print_learning(config, args.condition, args.profile, args.out, args.seed)
+                print_learning(
+                    config, args.condition, args.profile, args.out, args.seed, args.backend
+                )
             for seed, records in sorted(by_seed.items()):
                 m = summarize(records, config.max_attempts)
                 print(

@@ -20,6 +20,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest", "ruff"]
 video = ["imageio[ffmpeg]"]
+ruvector = ["maturin>=1.5,<2"]  # T22: builds rust/ruvector_vfa_py (needs a Rust toolchain)
 
 [project.scripts]
 vfa = "vfa.cli:main"

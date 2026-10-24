@@ -1,0 +1,23 @@
+[package]
+name = "ruvector_vfa_py"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "PyO3 binding over ruvector-robotics' cognitive types for ruvector-vfa (T22)"
+publish = false
+
+[lib]
+name = "ruvector_vfa_py"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py311"] }
+# The latest upstream commit touching crates/ruvector-robotics (checked with the
+# GitHub API on 2026-10-23).
+ruvector-robotics = { git = "https://github.com/ruvnet/ruvector", rev = "3e8429739fc0a3878b553a87bb91e7f66d8c0cbd" }
+
+[profile.release]
+opt-level = 3
+# The macOS 27 loader rejects a dylib after the default debuginfo strip
+# ("mis-aligned LINKEDIT string pool"): keep the symbols.
+strip = false

@@ -89,7 +89,11 @@ RuVector components (Python mirrors of ruvector_robotics::cognitive):
   SemanticMemory  <-> memory_system::SemanticMemory  skill prototypes (cluster centroids)
   SkillLibrary    <-> skill_learning::SkillLibrary   skills learned from successful attempts
   CognitiveCore   <-> cognitive_core::CognitiveCore  System 1 / System 2 / EMERGENCY modes
-backend: {backend} (a Python mirror; the Rust crate runs only with T22's --backend ruvector)"""
+backend: {backend}"""
+BACKEND_NOTES = {
+    "NumpyBackend": "a Python mirror of the crate's search; --backend ruvector runs the Rust crate",
+    "RuVectorBackend": "ruvector-robotics' EpisodicMemory through the PyO3 binding (T22)",
+}
 
 
 def build_parser(prog: str = "vfa demo") -> argparse.ArgumentParser:
@@ -99,6 +103,12 @@ def build_parser(prog: str = "vfa demo") -> argparse.ArgumentParser:
         "--seed", type=int, default=None, help="benchmark seed (default 500; pick_place 600)"
     )
     parser.add_argument("--task", choices=B.TASKS, default="lift", help="lift or pick_place")
+    parser.add_argument(
+        "--backend",
+        choices=B.BACKENDS,
+        default="numpy",
+        help="memory's vector store: numpy, or ruvector (the Rust crate, T22)",
+    )
     parser.add_argument("--video", action="store_true", help="a GIF of the first retried cube")
     parser.add_argument("--out", type=Path, default=None, help="run directory")
     parser.add_argument("--workers", type=int, default=B.default_workers())
@@ -288,13 +298,20 @@ def main(argv: Sequence[str] | None = None, prog: str = "vfa demo") -> int:
 
 def _run(args: argparse.Namespace, config: B.BenchmarkConfig, run: Path, n: int) -> int:
     pick_place = config.task == "pick_place"
+    memory = None
+    if args.backend == "ruvector":
+        from vfa.memory.memory_system import MemorySystem
+        from vfa.memory.ruvector_backend import RuVectorBackend
+
+        memory = MemorySystem(backend_factory=RuVectorBackend)
     if pick_place:
         from vfa.memory.embeddings import PlaceEmbedder
 
-        policy = S2.RetrievalPolicy(embedder=PlaceEmbedder())
+        policy = S2.RetrievalPolicy(memory, embedder=PlaceEmbedder())
     else:
-        policy = S2.RetrievalPolicy()
-    print(BANNER.format(backend=type(policy.memory.semantic.index).__name__), flush=True)
+        policy = S2.RetrievalPolicy(memory)
+    name = type(policy.memory.semantic.index).__name__
+    print(BANNER.format(backend=f"{name} ({BACKEND_NOTES.get(name, '')})"), flush=True)
     task = "pick-and-place: carry each cube to the target and set it down" if pick_place else "lift"
     print(
         f"\n{n} cubes of {config.task} benchmark seed {args.seed} (6 hidden classes; the arm "

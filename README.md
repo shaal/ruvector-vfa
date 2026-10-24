@@ -74,6 +74,14 @@ uv run ruff check . && uv run ruff format --check .
 
 Long runs are chunked and resumable: re-run the same command until it reports every chunk done. Everything a run writes goes under `runs/` (git-ignored).
 
+**The Rust backend (optional).** Memory can run its vector search through the real `ruvector-robotics` crate. This needs a Rust toolchain. Build the extension after `uv sync`, because a sync removes it:
+
+```bash
+uv sync --extra ruvector
+uv run maturin develop --release -m rust/ruvector_vfa_py/Cargo.toml
+uv run vfa demo --quick --backend ruvector   # the same results as the numpy backend
+```
+
 **macOS and the interactive viewer.** The project renders offscreen (`mujoco.Renderer`), so every command above runs headless. MuJoCo's interactive viewer is different: on macOS it must run under `mjpython`, which ships with the `mujoco` package:
 
 ```bash
@@ -111,7 +119,7 @@ docs/             architecture, results, feasibility, RuVector mapping, extensio
 |---|---|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Design and as-built notes: simulation, learning problem, memory, dual-process loop, safety, experiments, decision log |
 | [`docs/RESULTS.md`](docs/RESULTS.md) | Every measured number, with the command that produced it |
-| [`docs/RUVECTOR_MAPPING.md`](docs/RUVECTOR_MAPPING.md) | Python class ↔ `ruvector-robotics` Rust type, semantic differences, the drop-in plan |
+| [`docs/RUVECTOR_MAPPING.md`](docs/RUVECTOR_MAPPING.md) | Python class ↔ `ruvector-robotics` Rust type, semantic differences, the Rust backend |
 | [`docs/EXTENDING.md`](docs/EXTENDING.md) | Add an object class, a skill parameter, a memory backend, or a task |
 | [`docs/FEASIBILITY.md`](docs/FEASIBILITY.md) | The physics spike: grip force × closing speed × hidden class, the slip detector |
 | [`ROADMAP.md`](ROADMAP.md) | The task list; each task is one PR with acceptance criteria and a verify command |

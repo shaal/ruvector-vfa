@@ -172,8 +172,9 @@ whose metric differs from the factory's.
    `KEY_TYPES`, and to `SemanticMemory`. Pass the system as
    `RetrievalPolicy(memory=...)`. `_run_learner` (benchmark) and `_run` (demo)
    build a `RetrievalPolicy` with no memory, so a run with the new backend needs
-   a new option there. There is no `--backend` flag. T22 in `ROADMAP.md` plans
-   `src/vfa/memory/ruvector_backend.py` and `--backend ruvector`. Neither is built.
+   a new option there, as T22's `--backend ruvector` does (`RuVectorBackend` in
+   `src/vfa/memory/ruvector_backend.py` is the worked example: a Rust ranking over
+   `NumpyBackend`'s side table).
 4. Record the design in `docs/ARCHITECTURE.md` §5.4 ("Backend seam"), and add the
    `RuVector mapping:` paragraph to the module docstring.
 5. `CODE_FILES` in `benchmark.py` includes `memory/*.py`, so a new module re-runs
